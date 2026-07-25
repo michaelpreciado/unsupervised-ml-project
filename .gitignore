@@ -1,0 +1,20 @@
+# python
+.venv/
+venv/
+envtest/
+__pycache__/
+*.pyc
+output/
+
+# web
+node_modules/
+web/dist/
+.vercel/
+
+# The 400-image demo library is generated (deterministically, seeded) by
+# scripts/make_demo_assets.py — regenerate it rather than cloning it. The
+# packed sprite atlas the web demo needs is committed under web/public.
+assets/sources/
+
+# os
+.DS_Store

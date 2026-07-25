@@ -1,0 +1,17 @@
+{
+  "name": "preciado-mosaic-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Browser demo for the unsupervised-learning photo mosaic generator",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vite": "^6.0.11"
+  }
+}

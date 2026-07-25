@@ -1,0 +1,7 @@
+{
+  "count": 400,
+  "tileSize": 48,
+  "cols": 20,
+  "rows": 20,
+  "image": "/tiles/atlas.webp"
+}

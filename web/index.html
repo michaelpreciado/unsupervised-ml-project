@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Preciado Mosaic — unsupervised-learning photo mosaic</title>
+    <meta
+      name="description"
+      content="A photo mosaic generator that uses k-means clustering to organize a source-image library, then flies the tiles into place. Runs entirely in your browser."
+    />
+    <meta name="color-scheme" content="dark" />
+    <meta property="og:title" content="Preciado Mosaic" />
+    <meta
+      property="og:description"
+      content="Unsupervised learning, visibly at work: k-means clusters a photo library, then the tiles fly into place to rebuild your image."
+    />
+    <meta property="og:type" content="website" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+
+    <header class="hero">
+      <div class="wrap">
+        <p class="eyebrow">Unsupervised learning · k-means · in-browser</p>
+        <h1>Preciado Mosaic</h1>
+        <p class="lede">
+          Rebuild any image out of hundreds of smaller ones. A k-means model
+          groups the source library by visual similarity, each grid cell searches
+          only the cluster it belongs to, and the winning tiles fly into place.
+          <strong>Everything below runs in your browser</strong> — no uploads, no
+          server.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#studio">Open the studio</a>
+          <a
+            class="btn"
+            href="https://github.com/michaelpreciado/unsupervised-ml-project"
+            target="_blank"
+            rel="noopener"
+            >Source on GitHub</a
+          >
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section id="studio" class="wrap studio">
+        <div class="stage">
+          <div class="canvas-frame">
+            <canvas id="stage-canvas" aria-label="Mosaic animation"></canvas>
+            <div id="stage-overlay" class="overlay">
+              <div class="spinner"></div>
+              <p id="stage-status">Loading tile library…</p>
+            </div>
+          </div>
+          <div class="stage-bar">
+            <div id="stat-strip" class="stat-strip"></div>
+            <div class="stage-buttons">
+              <button id="replay" class="btn btn-ghost" type="button" disabled>
+                ↻ Replay animation
+              </button>
+              <button id="download" class="btn btn-ghost" type="button" disabled>
+                ↓ Save PNG
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <aside class="controls" aria-label="Pipeline controls">
+          <div class="control-group">
+            <h2>Target</h2>
+            <p class="hint">The image being rebuilt.</p>
+            <div class="preset-row" id="target-presets"></div>
+            <label class="file-btn">
+              <input id="target-file" type="file" accept="image/*" />
+              <span>Upload your own image</span>
+            </label>
+          </div>
+
+          <div class="control-group">
+            <h2>Tile library</h2>
+            <p class="hint">The photos the mosaic is built from.</p>
+            <div id="library-label" class="library-label">
+              Bundled demo library — 400 tiles
+            </div>
+            <label class="file-btn">
+              <input
+                id="source-files"
+                type="file"
+                accept="image/*"
+                multiple
+                webkitdirectory
+              />
+              <span>Use a folder of your own photos</span>
+            </label>
+            <button id="reset-library" class="linkish" type="button" hidden>
+              Back to the demo library
+            </button>
+          </div>
+
+          <div class="control-group">
+            <h2>Parameters</h2>
+
+            <label class="slider">
+              <span class="slider-label"
+                >Clusters <em>k</em><output id="out-k">8</output></span
+              >
+              <input id="in-k" type="range" min="2" max="24" step="1" value="8" />
+              <span class="hint">How many groups k-means partitions the library into.</span>
+            </label>
+
+            <label class="slider">
+              <span class="slider-label"
+                >Tile size<output id="out-tile">16 px</output></span
+              >
+              <input id="in-tile" type="range" min="8" max="32" step="4" value="16" />
+            </label>
+
+            <label class="slider">
+              <span class="slider-label"
+                >Mosaic width<output id="out-cols">48 tiles</output></span
+              >
+              <input id="in-cols" type="range" min="16" max="96" step="4" value="48" />
+            </label>
+
+            <label class="slider">
+              <span class="slider-label"
+                >Variety<output id="out-variety">0.25</output></span
+              >
+              <input
+                id="in-variety"
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value="0.25"
+              />
+              <span class="hint"
+                >Handicaps tiles that have already been used, so one average photo
+                can't carpet the mosaic. Higher = more of the library on screen and
+                a looser match.</span
+              >
+            </label>
+
+            <div class="field">
+              <span class="slider-label">Features</span>
+              <div class="segmented" id="feature-toggle">
+                <button type="button" data-feature="mean_rgb" class="active">
+                  mean RGB<small>3 dims</small>
+                </button>
+                <button type="button" data-feature="histogram">
+                  histogram<small>216 dims</small>
+                </button>
+              </div>
+              <span class="hint"
+                >Histogram is far more sensitive to variety — try 0.05 or below with
+                it, or the penalty swamps the colour signal.</span
+              >
+            </div>
+
+            <label class="checkbox">
+              <input id="in-compare" type="checkbox" checked />
+              <span>Also run brute-force matching (for the benchmark)</span>
+            </label>
+          </div>
+
+          <button id="run" class="btn btn-primary btn-block" type="button" disabled>
+            Generate mosaic
+          </button>
+          <p id="error" class="error" hidden></p>
+        </aside>
+      </section>
+
+      <section class="wrap panels">
+        <article class="panel">
+          <h3>1 · The target, gridded</h3>
+          <p>
+            Each cell reduced to its mean colour. This is the signal the matcher
+            is actually chasing.
+          </p>
+          <canvas id="preview-canvas" class="pixelated"></canvas>
+        </article>
+        <article class="panel">
+          <h3>2 · The mosaic</h3>
+          <p>Every cell replaced by its best-matching source photo.</p>
+          <canvas id="mosaic-canvas"></canvas>
+        </article>
+      </section>
+
+      <section class="wrap">
+        <h2 class="section-title">What k-means found</h2>
+        <p class="section-lede">
+          One contact sheet per cluster, straight from the model. Nothing here was
+          labelled — the grouping falls out of the pixel data alone. Clusters that
+          look coherent are why the search shortcut in step 5 is safe.
+        </p>
+        <div id="clusters" class="clusters"></div>
+      </section>
+
+      <section class="wrap">
+        <h2 class="section-title">How it works</h2>
+        <div class="pipeline">
+          <div class="pipe-col">
+            <span class="pipe-node">target image</span>
+            <span class="pipe-arrow">↓</span>
+            <span class="pipe-node">grid of cells</span>
+            <span class="pipe-arrow">↓</span>
+            <span class="pipe-node">feature per cell</span>
+          </div>
+          <div class="pipe-col">
+            <span class="pipe-node">source photos</span>
+            <span class="pipe-arrow">↓</span>
+            <span class="pipe-node">square thumbnails</span>
+            <span class="pipe-arrow">↓</span>
+            <span class="pipe-node accent">k-means clustering</span>
+          </div>
+          <div class="pipe-col join">
+            <span class="pipe-node">matching</span>
+            <span class="pipe-arrow">↓</span>
+            <span class="pipe-node">render + animate</span>
+          </div>
+        </div>
+
+        <ol class="steps">
+          <li>
+            <h4>Grid</h4>
+            <p>
+              The target is resized so the mosaic is exactly <em>n</em> tiles wide,
+              then cut into <em>tile size</em> squares. Fixed tile size, not fixed
+              grid count — it keeps matching and rendering simple.
+            </p>
+          </li>
+          <li>
+            <h4>Sources</h4>
+            <p>
+              Every source photo is centre-cropped square and thumbnailed to the
+              same tile size, so cells and tiles are directly comparable.
+            </p>
+          </li>
+          <li>
+            <h4>Features</h4>
+            <p>
+              Cells and tiles are embedded in one feature space, which turns
+              "visually similar" into "close in euclidean distance".
+              <strong>mean RGB</strong> is 3 numbers per image — the simplest thing
+              that works. <strong>histogram</strong> is a 216-dim joint RGB
+              histogram that captures colour <em>distribution</em>, so a
+              half-red/half-blue tile stops matching a uniform purple cell. Its
+              bins are <em>soft</em>: hard bin edges made two nearly identical
+              colours either side of a boundary look as different as red and blue,
+              which measurably beat up the mosaic.
+            </p>
+          </li>
+          <li>
+            <h4>Clustering — the unsupervised core</h4>
+            <p>
+              k-means partitions the tile library by visual similarity. No labels
+              anywhere: the structure comes purely from the data. k-means++
+              seeding, restarts kept by lowest inertia, Lloyd iterations to
+              convergence — the same defaults as the scikit-learn model in the CLI.
+            </p>
+          </li>
+          <li>
+            <h4>Matching</h4>
+            <p>
+              Each cell finds its nearest <em>cluster centroid</em> first, then
+              searches only inside that cluster — the coarse-quantization idea
+              behind IVF approximate-nearest-neighbour indexes like FAISS, except
+              the index here is the unsupervised model itself. A variety penalty,
+              scaled from the data, handicaps tiles that have already been placed.
+            </p>
+          </li>
+          <li>
+            <h4>Render + animate</h4>
+            <p>
+              Tiles start scattered beyond the frame and ease into their slots with
+              staggered ease-out-cubic motion — the browser twin of the Pygame
+              animation in the repo.
+            </p>
+          </li>
+        </ol>
+      </section>
+
+      <section class="wrap">
+        <h2 class="section-title">Does the clustering actually pay off?</h2>
+        <div id="benchmark" class="benchmark"></div>
+        <p class="note">
+          <strong>The honest version:</strong> at demo scale, cluster-accelerated
+          matching is often no faster on the clock than brute force — the distance
+          matrix is small and loop overhead dominates. What clustering reliably
+          cuts is <em>distance computations</em>, by roughly a factor of k. That
+          converts into wall-clock wins as the library and the feature
+          dimensionality grow, which is exactly why real ANN systems use this
+          structure at million-vector scale. Turn up the tile count, the mosaic
+          width and the histogram features and watch the gap move.
+        </p>
+      </section>
+
+      <section class="wrap cta">
+        <h2 class="section-title">Run it locally</h2>
+        <p class="section-lede">
+          The Python version does the same thing with scikit-learn and Pygame, plus
+          a <code>--scan-k</code> report (inertia + silhouette) for choosing k.
+        </p>
+        <pre><code>git clone https://github.com/michaelpreciado/unsupervised-ml-project
+cd unsupervised-ml-project
+python -m venv .venv &amp;&amp; .venv/bin/pip install -r requirements.txt
+.venv/bin/python scripts/make_demo_assets.py
+
+.venv/bin/python -m src.main \
+    --target assets/targets/demo_sunset.png \
+    --sources assets/sources \
+    --tile-size 16 --grid-cols 48 --k 8 --animate</code></pre>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap footer-inner">
+        <span>Built by Michael Preciado</span>
+        <a
+          href="https://github.com/michaelpreciado/unsupervised-ml-project"
+          target="_blank"
+          rel="noopener"
+          >github.com/michaelpreciado/unsupervised-ml-project</a
+        >
+      </div>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
