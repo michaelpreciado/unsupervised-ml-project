@@ -1,9 +1,24 @@
 /** Port of src/animate.py — tiles fly in from off-screen and settle into
- * their slots with staggered ease-out-cubic motion.
+ * their slots.
  *
  * The Pygame version blits one scaled surface per unique tile; here the
- * equivalent is an ImageBitmap cache, so a 1,500-cell mosaic is 1,500
- * cheap drawImage calls per frame rather than 1,500 pixel loops. */
+ * equivalent is an ImageBitmap cache, so a 1,500-cell mosaic is 1,500 cheap
+ * drawImage calls per frame rather than 1,500 pixel loops.
+ *
+ * Three things were added on top of the Python original, all of them cheap
+ * enough to survive a few thousand sprites at 60 fps:
+ *
+ * - **A wave, not a shuffle.** Delays are mostly a diagonal sweep across the
+ *   grid with a little jitter on top. Pure random delays read as noise; a
+ *   sweep reads as something being *built*, and you can follow one tile.
+ * - **Heat.** A tile in flight is tinted toward brand cyan with a `lighter`
+ *   pass that fades to nothing as it lands, so motion is legible as motion
+ *   and the frame cools into true colour. No shadow blur anywhere — that is
+ *   the one canvas effect that will not hold frame rate at this sprite count.
+ * - **A signature.** The watermark is drawn into the frame itself, so a
+ *   recording of this canvas carries it without a compositing step. */
+
+import { BRAND, drawWatermark } from './brand';
 
 export interface Sprite {
   sx: number;
@@ -11,6 +26,7 @@ export interface Sprite {
   fx: number;
   fy: number;
   delay: number;
+  spin: number;
   tile: number;
 }
 
@@ -19,6 +35,8 @@ export interface AnimationHandle {
   /** Resolves when the fly-in finishes (or immediately if stopped). */
   done: Promise<void>;
 }
+
+const BACKDROP = '#05070b';
 
 function easeOutCubic(t: number): number {
   return 1 - (1 - t) ** 3;
@@ -54,6 +72,17 @@ export interface AnimateOptions {
   stagger?: number;
   seed?: number;
   onProgress?: (fraction: number) => void;
+  /** Called after every painted frame — the recorder's hook for a
+   * fixed-rate capture. */
+  onFrame?: () => void;
+  /** Sign each frame in the corner. */
+  watermark?: boolean;
+  /** Extra seconds to hold on the finished mosaic before resolving, so a
+   * recording doesn't cut the moment it completes. */
+  hold?: number;
+  /** Skip the flight entirely — the honest response to
+   * prefers-reduced-motion, which still has to end at the same picture. */
+  still?: boolean;
 }
 
 export function animate(
@@ -63,7 +92,16 @@ export function animate(
   rows: number,
   cols: number,
   tileSize: number,
-  { duration = 1.5, stagger = 1.6, seed = 42, onProgress }: AnimateOptions = {},
+  {
+    duration = 1.5,
+    stagger = 1.6,
+    seed = 42,
+    onProgress,
+    onFrame,
+    watermark = true,
+    hold = 0,
+    still = false,
+  }: AnimateOptions = {},
 ): AnimationHandle {
   const w = cols * tileSize;
   const h = rows * tileSize;
@@ -78,12 +116,16 @@ export function animate(
     const r = Math.floor(i / cols);
     const c = i % cols;
     const [sx, sy] = scatterStart(rand, w, h);
+    // Mostly a diagonal sweep, a quarter jitter: ordered enough to read as
+    // construction, disordered enough not to look like a wipe.
+    const wave = (c / Math.max(1, cols - 1)) * 0.6 + (r / Math.max(1, rows - 1)) * 0.4;
     sprites[i] = {
       sx,
       sy,
       fx: c * tileSize,
       fy: r * tileSize,
-      delay: rand() * stagger,
+      delay: (wave * 0.75 + rand() * 0.25) * stagger,
+      spin: (rand() - 0.5) * 0.9,
       tile: choice[i],
     };
   }
@@ -92,34 +134,104 @@ export function animate(
 
   let frame = 0;
   let stopped = false;
-  const total = stagger + duration;
+  const flight = stagger + duration;
+  const total = flight + hold;
   let resolve!: () => void;
   const done = new Promise<void>((res) => {
     resolve = res;
   });
 
+  /** Faint tile-grid rulings, visible only while the mosaic is still mostly
+   * empty. Cheap: a few dozen strokes, not one per cell. */
+  function drawGuides() {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(92, 225, 242, 0.055)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const step = tileSize * 4;
+    for (let x = step; x < w; x += step) {
+      ctx.moveTo(x + 0.5, 0);
+      ctx.lineTo(x + 0.5, h);
+    }
+    for (let y = step; y < h; y += step) {
+      ctx.moveTo(0, y + 0.5);
+      ctx.lineTo(w, y + 0.5);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function paint(elapsed: number) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = BACKDROP;
+    ctx.fillRect(0, 0, w, h);
+    if (elapsed < flight) drawGuides();
+
+    // Pass 1: the tiles themselves, transformed by their own progress.
+    for (const s of sprites) {
+      const bmp = bitmaps.get(s.tile);
+      if (!bmp) continue;
+      const p = Math.min(1, Math.max(0, (elapsed - s.delay) / duration));
+      if (p <= 0) continue;
+      const e = easeOutCubic(p);
+      const x = s.sx + (s.fx - s.sx) * e;
+      const y = s.sy + (s.fy - s.sy) * e;
+
+      if (p >= 1) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalAlpha = 1;
+        ctx.drawImage(bmp, s.fx, s.fy, tileSize, tileSize);
+        continue;
+      }
+
+      // In flight: overshoot the scale slightly and unwind the spin, both
+      // driven off the same eased parameter so they land together.
+      const scale = 1 + (1 - e) * 0.55;
+      const angle = s.spin * (1 - e);
+      const half = tileSize / 2;
+      const cx = x + half;
+      const cy = y + half;
+      const cos = Math.cos(angle) * scale;
+      const sin = Math.sin(angle) * scale;
+      ctx.setTransform(cos, sin, -sin, cos, cx, cy);
+      ctx.globalAlpha = 0.15 + 0.85 * e;
+      ctx.drawImage(bmp, -half, -half, tileSize, tileSize);
+    }
+
+    // Pass 2: the heat. One additive rectangle per in-flight tile, batched
+    // under a single composite-mode switch.
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = BRAND.cyan;
+    for (const s of sprites) {
+      const p = Math.min(1, Math.max(0, (elapsed - s.delay) / duration));
+      if (p <= 0 || p >= 1) continue;
+      const e = easeOutCubic(p);
+      ctx.globalAlpha = (1 - e) * 0.3;
+      const x = s.sx + (s.fx - s.sx) * e;
+      const y = s.sy + (s.fy - s.sy) * e;
+      ctx.fillRect(x, y, tileSize, tileSize);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+
+    if (watermark) drawWatermark(ctx, w, h);
+    onProgress?.(Math.min(1, elapsed / Math.max(0.001, flight)));
+    onFrame?.();
+  }
+
+  if (still) {
+    paint(total + 1);
+    stopped = true;
+    resolve();
+    return { stop: () => {}, done };
+  }
+
   const start = performance.now();
   const tick = (now: number) => {
     if (stopped) return;
     const elapsed = (now - start) / 1000;
-
-    ctx.fillStyle = '#0b0d12';
-    ctx.fillRect(0, 0, w, h);
-    for (const s of sprites) {
-      const p = Math.min(1, Math.max(0, (elapsed - s.delay) / duration));
-      const e = easeOutCubic(p);
-      const bmp = bitmaps.get(s.tile);
-      if (!bmp) continue;
-      ctx.drawImage(
-        bmp,
-        s.sx + (s.fx - s.sx) * e,
-        s.sy + (s.fy - s.sy) * e,
-        tileSize,
-        tileSize,
-      );
-    }
-    onProgress?.(Math.min(1, elapsed / total));
-
+    paint(elapsed);
     if (elapsed >= total) {
       stopped = true;
       resolve();

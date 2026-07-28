@@ -82,6 +82,91 @@ export function drawGridPreview(
   ctx.putImageData(image, 0, 0);
 }
 
+/**
+ * The target repainted in exactly k colours — each cell filled with the
+ * mean colour of the cluster it was routed into.
+ *
+ * This is the model's own view of the image. Everything the matcher can
+ * distinguish at the routing stage is here; everything else it has to
+ * recover by searching inside a cluster. Turning k up and watching this
+ * image resolve is the clearest available answer to "what does k do".
+ */
+export function drawClusterMap(
+  canvas: HTMLCanvasElement,
+  cellCluster: Int32Array,
+  clusterColors: Uint8Array,
+  rows: number,
+  cols: number,
+): void {
+  canvas.width = cols;
+  canvas.height = rows;
+  const ctx = canvas.getContext('2d')!;
+  const image = ctx.createImageData(cols, rows);
+  for (let i = 0; i < rows * cols; i++) {
+    const c = Math.max(0, cellCluster[i]);
+    image.data[i * 4] = clusterColors[c * 3];
+    image.data[i * 4 + 1] = clusterColors[c * 3 + 1];
+    image.data[i * 4 + 2] = clusterColors[c * 3 + 2];
+    image.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(image, 0, 0);
+}
+
+/** Deep navy → cyan → white. Monotone in lightness, so the map still reads
+ * correctly in greyscale or to a colour-blind viewer. */
+const HEAT: [number, number, number][] = [
+  [4, 10, 38],
+  [12, 92, 168],
+  [64, 208, 236],
+  [240, 253, 255],
+];
+
+function heat(t: number): [number, number, number] {
+  const x = Math.min(0.9999, Math.max(0, t)) * (HEAT.length - 1);
+  const i = Math.floor(x);
+  const f = x - i;
+  const a = HEAT[i];
+  const b = HEAT[i + 1];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+}
+
+/**
+ * Where the library ran out: per-cell distance between the colour the target
+ * asked for and the closest tile that existed, penalties excluded.
+ *
+ * Excluding the variety penalty is the whole point. A cell that got a worse
+ * tile because a better one was already used is a *choice*; a cell whose
+ * best available option was still far away is a gap in the library. Only
+ * the second one is fixed by adding photos, and this map shows only that.
+ *
+ * Normalised to the 95th percentile rather than the maximum, so a single
+ * pathological cell can't flatten everything else into the floor.
+ */
+export function drawResidual(
+  canvas: HTMLCanvasElement,
+  cellNearest: Float32Array,
+  rows: number,
+  cols: number,
+): number {
+  canvas.width = cols;
+  canvas.height = rows;
+  const ctx = canvas.getContext('2d')!;
+  const image = ctx.createImageData(cols, rows);
+
+  const sorted = Float32Array.from(cellNearest).sort();
+  const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] || 1;
+
+  for (let i = 0; i < rows * cols; i++) {
+    const [r, g, b] = heat(cellNearest[i] / p95);
+    image.data[i * 4] = r;
+    image.data[i * 4 + 1] = g;
+    image.data[i * 4 + 2] = b;
+    image.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(image, 0, 0);
+  return p95;
+}
+
 /** One contact sheet per cluster: proof the grouping is sensible before
  * anything downstream depends on it. */
 export function drawContactSheet(

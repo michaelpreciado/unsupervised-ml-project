@@ -22,6 +22,25 @@ export interface MatchResult {
   choice: Int32Array;
   /** Number of cell↔tile distance computations performed. */
   distanceOps: number;
+  /** Per cell: the feature distance to the tile it ended up with, before
+   * the variety penalty is added. Drives the hover readout. */
+  cellDist: Float32Array;
+  /** Per cell: the distance to the closest tile available to it at all.
+   * Distinct from `cellDist` whenever the variety penalty steered the cell
+   * elsewhere, which is why the residual map uses this one — it isolates
+   * "the library can't do better" from "the matcher chose otherwise". */
+  cellNearest: Float32Array;
+  /** Per cell: how many tiles it actually compared against. */
+  cellCandidates: Int32Array;
+  /** Per cell: the cluster it was routed into, or -1 for brute force. */
+  cellCluster: Int32Array;
+  /** Cells the variety penalty pushed off their nearest tile, and what
+   * that cost in mean distance — the price of not repeating yourself. */
+  displaced: number;
+  meanDist: number;
+  meanNearest: number;
+  /** The handicap one prior use costs a tile, in feature-space units. */
+  penalty: number;
 }
 
 /** Greedy argmin over per-cell candidate lists, accumulating the usage
@@ -37,6 +56,8 @@ function greedy(
   const allTiles = tileFeats.count;
   const choice = new Int32Array(n);
   const counts = new Float64Array(allTiles);
+  const cellDist = new Float32Array(n);
+  const cellCandidates = new Int32Array(n);
   let distanceOps = 0;
 
   // Pass 1: each cell's raw nearest distance, so the penalty can be scaled
@@ -55,6 +76,7 @@ function greedy(
       if (d < min) min = d;
     }
     distanceOps += m;
+    cellCandidates[i] = m;
     rows[i] = row;
     mins[i] = min;
   }
@@ -62,23 +84,46 @@ function greedy(
   const penalty = variety > 0 ? variety * median(mins) : 0;
 
   // Pass 2: greedy pick with the accumulated usage handicap.
+  let displaced = 0;
+  let distSum = 0;
+  let nearestSum = 0;
   for (let i = 0; i < n; i++) {
     const cand = candidates[i];
     const row = rows[i];
     let best = 0;
     let bestScore = Infinity;
+    let bestRaw = Infinity;
     for (let j = 0; j < row.length; j++) {
       const t = cand ? cand[j] : j;
       const score = row[j] + penalty * counts[t];
       if (score < bestScore) {
         bestScore = score;
+        bestRaw = row[j];
         best = t;
       }
     }
     choice[i] = best;
+    cellDist[i] = bestRaw;
     counts[best] += 1;
+    distSum += bestRaw;
+    nearestSum += mins[i];
+    // A strict inequality would miss ties; the penalty only matters when it
+    // actually cost the cell something.
+    if (bestRaw > mins[i] + 1e-6) displaced++;
   }
-  return { choice, distanceOps };
+
+  return {
+    choice,
+    distanceOps,
+    cellDist,
+    cellNearest: Float32Array.from(mins),
+    cellCandidates,
+    cellCluster: new Int32Array(n).fill(-1),
+    displaced,
+    meanDist: n ? distSum / n : 0,
+    meanNearest: n ? nearestSum / n : 0,
+    penalty,
+  };
 }
 
 function median(values: Float64Array): number {
@@ -117,6 +162,7 @@ export function matchClustered(
   for (let i = 0; i < cellFeats.count; i++) candidates[i] = byCluster[cellCluster[i]];
 
   const result = greedy(cellFeats, tileFeats, candidates, variety);
+  result.cellCluster = cellCluster;
   // The centroid lookup is part of the cost — count it honestly.
   result.distanceOps += cellFeats.count * model.k;
   return result;

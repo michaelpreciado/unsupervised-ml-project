@@ -1,14 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="7" fill="#0e1017"/>
-  <g>
-    <rect x="5" y="5" width="7" height="7" rx="1.5" fill="#ff8a3d"/>
-    <rect x="13" y="5" width="7" height="7" rx="1.5" fill="#6d8cff"/>
-    <rect x="21" y="5" width="6" height="7" rx="1.5" fill="#ffd166"/>
-    <rect x="5" y="13" width="7" height="7" rx="1.5" fill="#6d8cff"/>
-    <rect x="13" y="13" width="7" height="7" rx="1.5" fill="#ffd166"/>
-    <rect x="21" y="13" width="6" height="7" rx="1.5" fill="#ff8a3d"/>
-    <rect x="5" y="21" width="7" height="6" rx="1.5" fill="#ffd166"/>
-    <rect x="13" y="21" width="7" height="6" rx="1.5" fill="#ff8a3d"/>
-    <rect x="21" y="21" width="6" height="6" rx="1.5" fill="#6d8cff"/>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <filter id="g" x="-120%" y="-120%" width="340%" height="340%">
+      <feGaussianBlur stdDeviation="3" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#06090d"/>
+  <path d="M10 12 H44 V40 H22 V54 H10 Z M22 21 H36 V27 H31 V31 H22 Z" fill="#f2f6fa" fill-rule="evenodd"/>
+  <circle cx="46" cy="13" r="5" fill="#5ce1f2" filter="url(#g)"/>
 </svg>

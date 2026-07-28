@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Preciado Mosaic — unsupervised-learning photo mosaic</title>
+    <title>Preciado Mosaic — unsupervised learning you can watch</title>
     <meta
       name="description"
-      content="A photo mosaic generator that uses k-means clustering to organize a source-image library, then flies the tiles into place. Runs entirely in your browser."
+      content="A photo mosaic generator that uses k-means clustering to organize a source-image library, then flies the tiles into place — with the convergence trace, the feature space and the cost of every choice on screen. Runs entirely in your browser."
     />
     <meta name="color-scheme" content="dark" />
     <meta property="og:title" content="Preciado Mosaic" />
@@ -18,56 +18,100 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   </head>
   <body>
-    <div class="grain" aria-hidden="true"></div>
+    <canvas id="rain" class="rain" aria-hidden="true"></canvas>
+    <div class="atmosphere" aria-hidden="true"></div>
 
     <header class="hero">
       <div class="wrap">
-        <p class="eyebrow">Unsupervised learning · k-means · in-browser</p>
-        <h1>Preciado Mosaic</h1>
+        <a class="brand" href="#studio" aria-label="Preciado Tech">
+          <span class="brand-mark" id="brand-mark" aria-hidden="true"></span>
+          <span class="brand-word">Preciado <b>Tech</b></span>
+        </a>
+
+        <p class="eyebrow">
+          <span>unsupervised learning</span><i></i><span>k-means</span><i></i
+          ><span>no server, no upload</span>
+        </p>
+        <h1>Watch a model<br />rebuild an image.</h1>
         <p class="lede">
-          Rebuild any image out of hundreds of smaller ones. A k-means model
-          groups the source library by visual similarity, each grid cell searches
-          only the cluster it belongs to, and the winning tiles fly into place.
-          <strong>Everything below runs in your browser</strong> — no uploads, no
-          server.
+          Hundreds of photos go in with no labels, no categories and no
+          supervision. k-means finds the structure hiding in their pixels, every
+          cell of your target image searches only the group it belongs to, and
+          the winning tiles fly into place.
+          <strong>Everything below runs on your machine</strong> — the model is
+          fitted in this tab, and every number on this page came out of the run
+          you are looking at.
         </p>
         <div class="hero-actions">
           <a class="btn btn-primary" href="#studio">Open the studio</a>
+          <a class="btn" href="#inside">See inside the model</a>
           <a
-            class="btn"
+            class="btn btn-quiet"
             href="https://github.com/michaelpreciado/unsupervised-ml-project"
             target="_blank"
             rel="noopener"
-            >Source on GitHub</a
+            >Source</a
           >
         </div>
       </div>
     </header>
 
     <main>
+      <!-- ------------------------------------------------------- studio -->
       <section id="studio" class="wrap studio">
         <div class="stage">
-          <div class="canvas-frame">
+          <div class="stage-head">
+            <div class="view-switch" id="view-switch" role="tablist" aria-label="Stage view">
+              <button type="button" data-view="animation" class="active" role="tab">
+                Animation
+              </button>
+              <button type="button" data-view="target" role="tab">Target</button>
+              <button type="button" data-view="means" role="tab">Cell means</button>
+              <button type="button" data-view="clusters" role="tab">Cluster map</button>
+              <button type="button" data-view="mosaic" role="tab">Mosaic</button>
+              <button type="button" data-view="residual" role="tab">Error</button>
+            </div>
+          </div>
+
+          <figure class="canvas-frame">
             <canvas id="stage-canvas" aria-label="Mosaic animation"></canvas>
+            <span class="corner tl" aria-hidden="true"></span>
+            <span class="corner tr" aria-hidden="true"></span>
+            <span class="corner bl" aria-hidden="true"></span>
+            <span class="corner br" aria-hidden="true"></span>
+            <div class="rec-dot" id="rec-dot" hidden>REC</div>
             <div id="stage-overlay" class="overlay">
               <div class="spinner"></div>
               <p id="stage-status">Loading tile library…</p>
             </div>
-          </div>
+            <div class="scrub" id="scrub" aria-hidden="true"><i></i></div>
+          </figure>
+          <figcaption class="stage-caption" id="stage-caption">
+            Tiles fly in from off the canvas and cool from cyan to their true
+            colour as they land.
+          </figcaption>
+
           <div class="stage-bar">
             <div id="stat-strip" class="stat-strip"></div>
             <div class="stage-buttons">
               <button id="replay" class="btn btn-ghost" type="button" disabled>
-                ↻ Replay animation
+                Replay
               </button>
               <button id="download" class="btn btn-ghost" type="button" disabled>
-                ↓ Save PNG
+                Save PNG
+              </button>
+              <button id="record" class="btn btn-ghost" type="button" disabled>
+                Save video
               </button>
             </div>
           </div>
+          <p class="record-note" id="record-note">
+            The video is encoded in this tab and saved straight to your
+            downloads, watermarked in the corner. Nothing is uploaded.
+          </p>
         </div>
 
-        <aside class="controls" aria-label="Pipeline controls">
+        <aside class="controls panel" aria-label="Pipeline controls">
           <div class="control-group">
             <h2>Target</h2>
             <p class="hint">The image being rebuilt.</p>
@@ -80,7 +124,10 @@
 
           <div class="control-group">
             <h2>Tile library</h2>
-            <p class="hint">The photos the mosaic is built from.</p>
+            <p class="hint">
+              The photos the mosaic is built from — and the only data the model
+              ever sees.
+            </p>
             <div id="library-label" class="library-label">
               Bundled demo library — 400 tiles
             </div>
@@ -107,7 +154,10 @@
                 >Clusters <em>k</em><output id="out-k">8</output></span
               >
               <input id="in-k" type="range" min="2" max="24" step="1" value="8" />
-              <span class="hint">How many groups k-means partitions the library into.</span>
+              <span class="hint"
+                >How many groups k-means partitions the library into, and how
+                many tiles each cell gets to consider.</span
+              >
             </label>
 
             <label class="slider">
@@ -137,9 +187,9 @@
                 value="0.25"
               />
               <span class="hint"
-                >Handicaps tiles that have already been used, so one average photo
-                can't carpet the mosaic. Higher = more of the library on screen and
-                a looser match.</span
+                >Handicaps tiles that have already been used, so one average
+                photo can't carpet the mosaic. Higher = more of the library on
+                screen and a looser match.</span
               >
             </label>
 
@@ -154,8 +204,8 @@
                 </button>
               </div>
               <span class="hint"
-                >Histogram is far more sensitive to variety — try 0.05 or below with
-                it, or the penalty swamps the colour signal.</span
+                >Histogram is far more sensitive to variety — try 0.05 or below
+                with it, or the penalty swamps the colour signal.</span
               >
             </div>
 
@@ -172,9 +222,119 @@
         </aside>
       </section>
 
+      <!-- ------------------------------------------------------ console -->
+      <section class="wrap">
+        <div class="section-head">
+          <h2 class="section-title">The run log</h2>
+          <p class="section-lede">
+            Every stage, with the numbers it actually produced. This is the same
+            trace the Python CLI prints — the browser port is a port, not a
+            re-imagining.
+          </p>
+        </div>
+        <div class="console panel" id="console" role="log" aria-live="polite"></div>
+      </section>
+
+      <!-- ------------------------------------------------ inside model -->
+      <section class="wrap" id="inside">
+        <div class="section-head">
+          <h2 class="section-title">Inside the model</h2>
+          <p class="section-lede">
+            Clustering is usually invisible: you hand it data, it hands back
+            labels, and you take the grouping on faith. These four views are
+            what it looks like when you don't.
+          </p>
+        </div>
+
+        <div class="insight-grid">
+          <article class="panel insight span-2">
+            <header class="insight-head">
+              <h3>The feature space</h3>
+              <p>
+                Every image in this project is a point — 3 numbers for mean RGB,
+                216 for a histogram. Distance in that space is what "looks
+                similar" means here. Below is that space flattened onto its two
+                highest-variance directions with PCA, which is the only way to
+                actually look at it.
+              </p>
+            </header>
+            <canvas id="space-canvas" class="space"></canvas>
+            <ul class="legend">
+              <li><i class="dot-tile"></i>library tile, at its true mean colour</li>
+              <li><i class="dot-cross"></i>cluster centroid — the model, in <em>k</em> points</li>
+              <li><i class="dot-hull"></i>cluster extent</li>
+              <li><i class="dot-cell"></i>a cell of your target, asking for colour</li>
+            </ul>
+            <p class="insight-note" id="space-note"></p>
+          </article>
+
+          <article class="panel insight">
+            <header class="insight-head">
+              <h3>Convergence</h3>
+              <p>
+                Lloyd's algorithm alternates two steps — assign every tile to its
+                nearest centre, then move each centre to the mean of what it was
+                given. Inertia (cyan) can only fall; reassignments (blue bars)
+                are what actually reach zero.
+              </p>
+            </header>
+            <canvas id="converge-canvas"></canvas>
+            <p class="insight-note" id="converge-note"></p>
+          </article>
+
+          <article class="panel insight">
+            <header class="insight-head">
+              <h3>Ten different answers</h3>
+              <p>
+                k-means finds a local minimum, and which one depends entirely on
+                where the centres started. It's run 10 times from different
+                k-means++ seeds and the lowest-inertia fit wins. Each bar is one
+                restart.
+              </p>
+            </header>
+            <canvas id="restart-canvas"></canvas>
+            <p class="insight-note" id="restart-note"></p>
+          </article>
+
+          <article class="panel insight">
+            <header class="insight-head">
+              <h3>Choosing <em>k</em></h3>
+              <p>
+                Inertia always improves with more clusters, so it can only show
+                an elbow — never pick a value. Silhouette measures how much
+                closer a tile is to its own cluster than the next one over, and
+                it can peak.
+              </p>
+            </header>
+            <canvas id="kscan-canvas"></canvas>
+            <div class="insight-actions">
+              <button id="scan-k" class="btn btn-ghost" type="button" disabled>
+                Run the sweep — k = 2…16
+              </button>
+              <span class="insight-note" id="kscan-note"></span>
+            </div>
+          </article>
+
+          <article class="panel insight">
+            <header class="insight-head">
+              <h3>What variety costs</h3>
+              <p>
+                Left alone, greedy matching hands the same flattering tile to
+                hundreds of cells. The penalty taxes each reuse — which means
+                deliberately giving some cells a worse tile. This is the trade,
+                priced.
+              </p>
+            </header>
+            <dl class="ledger" id="variety-ledger"></dl>
+            <p class="insight-note" id="variety-note"></p>
+          </article>
+        </div>
+      </section>
+
+      <!-- ----------------------------------------------------- panels -->
       <section class="wrap panels">
         <article class="panel">
-          <h3>1 · The target, gridded</h3>
+          <h3 class="panel-title">01 · The target, gridded</h3>
           <p>
             Each cell reduced to its mean colour. This is the signal the matcher
             is actually chasing.
@@ -182,42 +342,55 @@
           <canvas id="preview-canvas" class="pixelated"></canvas>
         </article>
         <article class="panel">
-          <h3>2 · The mosaic</h3>
-          <p>Every cell replaced by its best-matching source photo.</p>
-          <canvas id="mosaic-canvas"></canvas>
+          <h3 class="panel-title">02 · The mosaic</h3>
+          <p>
+            Every cell replaced by its best-matching source photo.
+            <strong>Hover any cell</strong> to see the decision behind it.
+          </p>
+          <div class="inspect-wrap">
+            <canvas id="mosaic-canvas"></canvas>
+            <div class="inspector" id="inspector" hidden></div>
+          </div>
         </article>
       </section>
 
+      <!-- ---------------------------------------------------- clusters -->
       <section class="wrap">
-        <h2 class="section-title">What k-means found</h2>
-        <p class="section-lede">
-          One contact sheet per cluster, straight from the model. Nothing here was
-          labelled — the grouping falls out of the pixel data alone. Clusters that
-          look coherent are why the search shortcut in step 5 is safe.
-        </p>
+        <div class="section-head">
+          <h2 class="section-title">What k-means found</h2>
+          <p class="section-lede">
+            One contact sheet per cluster, straight from the model. Nothing here
+            was labelled — the grouping falls out of the pixel data alone.
+            Clusters that look coherent are why the search shortcut is safe.
+            Hover one to isolate it in the feature-space plot above.
+          </p>
+        </div>
         <div id="clusters" class="clusters"></div>
       </section>
 
+      <!-- -------------------------------------------------- how it works -->
       <section class="wrap">
-        <h2 class="section-title">How it works</h2>
+        <div class="section-head">
+          <h2 class="section-title">How it works</h2>
+        </div>
         <div class="pipeline">
           <div class="pipe-col">
             <span class="pipe-node">target image</span>
-            <span class="pipe-arrow">↓</span>
+            <span class="pipe-arrow"></span>
             <span class="pipe-node">grid of cells</span>
-            <span class="pipe-arrow">↓</span>
+            <span class="pipe-arrow"></span>
             <span class="pipe-node">feature per cell</span>
           </div>
           <div class="pipe-col">
             <span class="pipe-node">source photos</span>
-            <span class="pipe-arrow">↓</span>
+            <span class="pipe-arrow"></span>
             <span class="pipe-node">square thumbnails</span>
-            <span class="pipe-arrow">↓</span>
+            <span class="pipe-arrow"></span>
             <span class="pipe-node accent">k-means clustering</span>
           </div>
           <div class="pipe-col join">
             <span class="pipe-node">matching</span>
-            <span class="pipe-arrow">↓</span>
+            <span class="pipe-arrow"></span>
             <span class="pipe-node">render + animate</span>
           </div>
         </div>
@@ -226,9 +399,9 @@
           <li>
             <h4>Grid</h4>
             <p>
-              The target is resized so the mosaic is exactly <em>n</em> tiles wide,
-              then cut into <em>tile size</em> squares. Fixed tile size, not fixed
-              grid count — it keeps matching and rendering simple.
+              The target is resized so the mosaic is exactly <em>n</em> tiles
+              wide, then cut into <em>tile size</em> squares. Fixed tile size,
+              not fixed grid count — it keeps matching and rendering simple.
             </p>
           </li>
           <li>
@@ -243,13 +416,13 @@
             <p>
               Cells and tiles are embedded in one feature space, which turns
               "visually similar" into "close in euclidean distance".
-              <strong>mean RGB</strong> is 3 numbers per image — the simplest thing
-              that works. <strong>histogram</strong> is a 216-dim joint RGB
+              <strong>mean RGB</strong> is 3 numbers per image — the simplest
+              thing that works. <strong>histogram</strong> is a 216-dim joint RGB
               histogram that captures colour <em>distribution</em>, so a
               half-red/half-blue tile stops matching a uniform purple cell. Its
               bins are <em>soft</em>: hard bin edges made two nearly identical
-              colours either side of a boundary look as different as red and blue,
-              which measurably beat up the mosaic.
+              colours either side of a boundary look as different as red and
+              blue, which measurably beat up the mosaic.
             </p>
           </li>
           <li>
@@ -258,7 +431,8 @@
               k-means partitions the tile library by visual similarity. No labels
               anywhere: the structure comes purely from the data. k-means++
               seeding, restarts kept by lowest inertia, Lloyd iterations to
-              convergence — the same defaults as the scikit-learn model in the CLI.
+              convergence — the same defaults as the scikit-learn model in the
+              CLI.
             </p>
           </li>
           <li>
@@ -268,41 +442,50 @@
               searches only inside that cluster — the coarse-quantization idea
               behind IVF approximate-nearest-neighbour indexes like FAISS, except
               the index here is the unsupervised model itself. A variety penalty,
-              scaled from the data, handicaps tiles that have already been placed.
+              scaled from the data, handicaps tiles that have already been
+              placed.
             </p>
           </li>
           <li>
             <h4>Render + animate</h4>
             <p>
-              Tiles start scattered beyond the frame and ease into their slots with
-              staggered ease-out-cubic motion — the browser twin of the Pygame
-              animation in the repo.
+              Tiles start scattered beyond the frame and ease into their slots on
+              a staggered diagonal sweep — the browser twin of the Pygame
+              animation in the repo, plus a corner signature so a saved clip
+              carries its own attribution.
             </p>
           </li>
         </ol>
       </section>
 
+      <!-- --------------------------------------------------- benchmark -->
       <section class="wrap">
-        <h2 class="section-title">Does the clustering actually pay off?</h2>
-        <div id="benchmark" class="benchmark"></div>
+        <div class="section-head">
+          <h2 class="section-title">Does the clustering actually pay off?</h2>
+        </div>
+        <div id="benchmark" class="benchmark panel"></div>
         <p class="note">
           <strong>The honest version:</strong> at demo scale, cluster-accelerated
-          matching is often no faster on the clock than brute force — the distance
-          matrix is small and loop overhead dominates. What clustering reliably
-          cuts is <em>distance computations</em>, by roughly a factor of k. That
-          converts into wall-clock wins as the library and the feature
+          matching is often no faster on the clock than brute force — the
+          distance matrix is small and loop overhead dominates. What clustering
+          reliably cuts is <em>distance computations</em>, by roughly a factor of
+          k. That converts into wall-clock wins as the library and the feature
           dimensionality grow, which is exactly why real ANN systems use this
           structure at million-vector scale. Turn up the tile count, the mosaic
           width and the histogram features and watch the gap move.
         </p>
       </section>
 
+      <!-- --------------------------------------------------------- cta -->
       <section class="wrap cta">
-        <h2 class="section-title">Run it locally</h2>
-        <p class="section-lede">
-          The Python version does the same thing with scikit-learn and Pygame, plus
-          a <code>--scan-k</code> report (inertia + silhouette) for choosing k.
-        </p>
+        <div class="section-head">
+          <h2 class="section-title">Run it locally</h2>
+          <p class="section-lede">
+            The Python version does the same thing with scikit-learn and Pygame,
+            plus a <code>--scan-k</code> report (inertia + silhouette) for
+            choosing k and <code>--record</code> for a watermarked capture.
+          </p>
+        </div>
         <pre><code>git clone https://github.com/michaelpreciado/unsupervised-ml-project
 cd unsupervised-ml-project
 python -m venv .venv &amp;&amp; .venv/bin/pip install -r requirements.txt
@@ -317,7 +500,10 @@ python -m venv .venv &amp;&amp; .venv/bin/pip install -r requirements.txt
 
     <footer>
       <div class="wrap footer-inner">
-        <span>Built by Michael Preciado</span>
+        <span class="footer-brand">
+          <span class="brand-mark small" id="footer-mark" aria-hidden="true"></span>
+          Built by Michael Preciado
+        </span>
         <a
           href="https://github.com/michaelpreciado/unsupervised-ml-project"
           target="_blank"
