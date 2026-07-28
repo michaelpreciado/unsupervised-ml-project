@@ -1,8 +1,21 @@
 # Mosaic ML Project — Unsupervised Learning Photo Mosaic Generator
 
-> **Status.** Milestones 1–11 are done: the pipeline runs end to end from
+> **Status.** All 12 milestones are done. The pipeline runs end to end from
 > the CLI (`src/main.py`), a Gradio UI (`src/ui.py`), and a TypeScript port
-> deployed as a browser demo (`web/`). Milestone 12 (demo video) is open.
+> deployed as a browser demo (`web/`). Milestone 12 turned into something
+> better than a recorded screencast: both front ends *export* a watermarked
+> video of the animation, locally — `--record` on the CLI, MediaRecorder in
+> the browser — so the demo regenerates itself for any target and any
+> parameters instead of going stale.
+>
+> A thirteenth thing was added that the plan didn't anticipate and probably
+> should have: the browser demo now visualizes the *model*, not just its
+> output — Lloyd convergence per iteration, the ten k-means++ restarts, a
+> PCA projection of the feature space with cluster hulls and centroids, an
+> on-demand inertia/silhouette sweep over k, a per-cell inspector, and a
+> ledger pricing what the variety penalty costs. The original plan treated
+> clustering as machinery; making the machinery legible turned out to be the
+> part worth building.
 >
 > Two things came out differently than this plan expected, both written up
 > in the README:
@@ -80,7 +93,9 @@ guides rather than writes.
 10. Polish: easing/timing, UI for target selection, optional web fetch
 11. README: the ML approach, clustering choice, k selection, feature
     comparison, and how this differs from GA/FAISS photomosaic projects
-12. Record a demo video
+12. Record a demo video — shipped as an export feature rather than an
+    artifact: `--record` (headless, fixed timestep, watermarked) and an
+    in-browser MediaRecorder capture of the same animation
 
 ## Differentiation from existing similar projects
 

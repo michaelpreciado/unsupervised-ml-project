@@ -3,3 +3,6 @@ Pillow
 scikit-learn
 pygame-ce
 gradio
+
+# Optional: lets `--record` write an mp4 directly instead of a PNG sequence.
+# imageio[ffmpeg]

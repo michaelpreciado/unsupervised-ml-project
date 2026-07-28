@@ -9,6 +9,20 @@
 import { sqDist } from './features';
 import type { Features } from './features';
 
+/** One Lloyd iteration, recorded so the page can show convergence rather
+ * than assert it. */
+export interface KMeansStep {
+  iter: number;
+  /** Sum of squared distances to the assigned centroid. Monotonically
+   * non-increasing — that it never rises is the guarantee Lloyd gives. */
+  inertia: number;
+  /** Tiles that changed cluster this pass. Hits zero at convergence. */
+  moved: number;
+  /** How far the centroids travelled, summed. The other convergence view:
+   * assignments stop flipping because the centres stop moving. */
+  shift: number;
+}
+
 export interface KMeansModel {
   k: number;
   dims: number;
@@ -17,6 +31,11 @@ export interface KMeansModel {
   /** Cluster label per input row. */
   labels: Int32Array;
   inertia: number;
+  /** Convergence trace of the restart that won. */
+  trace: KMeansStep[];
+  /** Final inertia of every restart, in the order they were run. Spread
+   * across these is the visible argument for why n_init > 1 exists. */
+  restarts: number[];
 }
 
 /** Small deterministic PRNG so a given seed always yields the same run. */
@@ -75,15 +94,16 @@ function lloyd(
   centroids: Float32Array,
   k: number,
   maxIter: number,
-): { labels: Int32Array; inertia: number } {
+): { labels: Int32Array; inertia: number; trace: KMeansStep[] } {
   const { data, count, dims } = features;
   const labels = new Int32Array(count).fill(-1);
   const sums = new Float64Array(k * dims);
   const counts = new Int32Array(k);
+  const trace: KMeansStep[] = [];
   let inertia = 0;
 
   for (let iter = 0; iter < maxIter; iter++) {
-    let changed = false;
+    let moved = 0;
     inertia = 0;
 
     for (let i = 0; i < count; i++) {
@@ -99,10 +119,13 @@ function lloyd(
       inertia += bestDist;
       if (labels[i] !== best) {
         labels[i] = best;
-        changed = true;
+        moved++;
       }
     }
-    if (!changed && iter > 0) break;
+    if (moved === 0 && iter > 0) {
+      trace.push({ iter: iter + 1, inertia, moved: 0, shift: 0 });
+      break;
+    }
 
     sums.fill(0);
     counts.fill(0);
@@ -111,12 +134,21 @@ function lloyd(
       counts[c]++;
       for (let d = 0; d < dims; d++) sums[c * dims + d] += data[i * dims + d];
     }
+    let shift = 0;
     for (let c = 0; c < k; c++) {
       if (counts[c] === 0) continue; // keep an empty cluster's old centre
-      for (let d = 0; d < dims; d++) centroids[c * dims + d] = sums[c * dims + d] / counts[c];
+      let move = 0;
+      for (let d = 0; d < dims; d++) {
+        const next = sums[c * dims + d] / counts[c];
+        const delta = next - centroids[c * dims + d];
+        move += delta * delta;
+        centroids[c * dims + d] = next;
+      }
+      shift += Math.sqrt(move);
     }
+    trace.push({ iter: iter + 1, inertia, moved, shift });
   }
-  return { labels, inertia };
+  return { labels, inertia, trace };
 }
 
 export function kmeans(
@@ -126,16 +158,77 @@ export function kmeans(
 ): KMeansModel {
   const kk = Math.max(1, Math.min(k, features.count));
   const rand = mulberry32(seed);
+  const restarts: number[] = [];
   let best: KMeansModel | null = null;
 
   for (let attempt = 0; attempt < nInit; attempt++) {
     const centroids = kmeansPlusPlus(features, kk, rand);
-    const { labels, inertia } = lloyd(features, centroids, kk, maxIter);
+    const { labels, inertia, trace } = lloyd(features, centroids, kk, maxIter);
+    restarts.push(inertia);
     if (!best || inertia < best.inertia) {
-      best = { k: kk, dims: features.dims, centroids, labels, inertia };
+      best = { k: kk, dims: features.dims, centroids, labels, inertia, trace, restarts };
     }
   }
+  best!.restarts = restarts;
   return best!;
+}
+
+/**
+ * Mean silhouette coefficient — how well each point sits in its own cluster
+ * versus the next-best one, in [-1, 1].
+ *
+ * Unlike inertia, this doesn't fall monotonically as k grows, so it can
+ * actually pick a k rather than just describe one. It's O(n²), so large
+ * libraries are evaluated on a deterministic subsample; the page reports
+ * how many points were used so the number isn't read as exact.
+ */
+export function silhouette(
+  features: Features,
+  labels: Int32Array,
+  k: number,
+  maxSamples = 600,
+): { score: number; sampled: number } {
+  const { data, count, dims } = features;
+  if (k < 2 || count <= k) return { score: 0, sampled: 0 };
+
+  const stride = Math.max(1, Math.ceil(count / maxSamples));
+  const idx: number[] = [];
+  for (let i = 0; i < count; i += stride) idx.push(i);
+  const n = idx.length;
+
+  // Cluster sizes over the *sample*, since the a/b means are taken over it.
+  const sizes = new Int32Array(k);
+  for (const i of idx) sizes[labels[i]]++;
+
+  let total = 0;
+  let counted = 0;
+  const sums = new Float64Array(k);
+  for (let ai = 0; ai < n; ai++) {
+    const i = idx[ai];
+    const own = labels[i];
+    if (sizes[own] < 2) continue; // a singleton cluster has no defined a(i)
+
+    sums.fill(0);
+    for (let bi = 0; bi < n; bi++) {
+      if (bi === ai) continue;
+      const j = idx[bi];
+      sums[labels[j]] += Math.sqrt(sqDist(data, i, data, j, dims));
+    }
+
+    const a = sums[own] / (sizes[own] - 1);
+    let b = Infinity;
+    for (let c = 0; c < k; c++) {
+      if (c === own || sizes[c] === 0) continue;
+      const mean = sums[c] / sizes[c];
+      if (mean < b) b = mean;
+    }
+    if (!Number.isFinite(b)) continue;
+
+    const denom = Math.max(a, b);
+    if (denom > 0) total += (b - a) / denom;
+    counted++;
+  }
+  return { score: counted ? total / counted : 0, sampled: n };
 }
 
 /** Assign already-fitted clusters to new rows (the target's cells). */

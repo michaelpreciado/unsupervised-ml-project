@@ -8,8 +8,14 @@ Two front ends, one algorithm: a **Python CLI** (scikit-learn + Pygame) and
 a **browser demo** (TypeScript, no backend) that ports the same pipeline
 step for step.
 
+The interesting half is the second one: the demo doesn't just show the
+mosaic, it shows the model that built it — the convergence trace, the
+feature space in 2-D, what the parameters cost, and the decision behind any
+cell you point at. Clustering is normally invisible; here it isn't.
+
 **[▶ Live demo](https://preciado-mosaic.vercel.app)** · everything runs
-client-side — no uploads, no server.
+client-side — no uploads, no server. Both front ends can save a
+**watermarked video** of the fly-in, encoded locally.
 
 ![the browser demo](assets/preview/site.png)
 
@@ -48,11 +54,50 @@ source photos ──► tile thumbnails ──► feature per tile ──► k-m
    average-looking photo doesn't carpet the mosaic.
 6. **Render + animate** (`src/render.py`, `src/animate.py`) — static PNG
    first, then a Pygame animation: tiles start scattered off-screen and fly
-   into their slots with staggered ease-out-cubic motion.
+   into their slots on a staggered diagonal sweep, ease-out-cubic, tinted
+   cyan in flight and cooling to true color as they land. `--record` renders
+   the same timeline headlessly at a fixed timestep and writes a video.
 
 | grid preview (cell mean colors) | finished mosaic |
 | --- | --- |
 | ![grid preview](assets/preview/grid_preview.png) | ![mosaic result](assets/preview/mosaic.png) |
+
+## Watching it work
+
+Getting a mosaic out is the easy half. Every stage of the pipeline also
+emits what it did, and the browser demo renders all of it:
+
+- **Six stage views** over the same frame — the target, the cell means the
+  matcher is actually chasing, the **cluster map** (the target repainted in
+  exactly `k` colors: the model's own resolution), the mosaic, and an
+  **error map** of where the library ran out of colors. Turning `k` up and
+  watching the cluster map resolve is the most direct answer to "what does
+  k do" I know of.
+- **A run log** — every stage with the numbers it produced, including the
+  Lloyd iterations one by one: inertia falling, reassignments hitting zero,
+  how far the centroids travelled.
+
+  ![the run log](assets/preview/run_log.png)
+
+- **The feature space**, projected to 2-D with PCA (power iteration, top two
+  components, `web/src/lib/projection.ts`). Colored dots are library tiles
+  at their true mean color, outlines are the partition k-means found,
+  crosses are the centroids, and the white haze is where the target's cells
+  are asking for color. Empty white regions are the honest failure mode of a
+  photo mosaic. The panel reports how much variance the two axes carry, so
+  the picture states its own fidelity.
+
+  ![the feature space](assets/preview/feature_space.png)
+
+- **Convergence, restarts, and the k sweep** — inertia per iteration, the
+  spread across the ten k-means++ restarts (the argument for `n_init > 1`,
+  or its null result), and inertia vs. silhouette across k = 2…16 on demand.
+- **A per-cell inspector** — hover any cell of the finished mosaic to see
+  the colour it asked for, which cluster it was routed to, how many tiles
+  that left to search, what it got, and — when the variety penalty took its
+  first choice away — what it could have had.
+- **A ledger for the variety penalty**, pricing the trade explicitly: how
+  much fidelity was given up, for how many distinct photos on screen.
 
 ## Quick start
 
@@ -73,6 +118,19 @@ check), `clusters/cluster_XX.png` (one contact sheet per cluster), and
 `mosaic.png`. Use `--scan-k 2:12` for the k-selection report and
 `--feature histogram` for the higher-dimensional features.
 
+To save the animation instead of watching it:
+
+```bash
+.venv/bin/python -m src.main --target ... --sources ... --record output/mosaic.mp4
+```
+
+`--record` opens no window, so it works over SSH and in CI, and it advances
+the animation on a fixed timestep rather than the wall clock — the same
+inputs give you a byte-comparable video every time. It writes an MP4 when
+`imageio[ffmpeg]` is installed and a numbered PNG sequence (plus the ffmpeg
+command to stitch it) when it isn't. Frames carry a small Preciado Tech
+signature in the corner; `--no-watermark` drops it.
+
 Use your own images: point `--target` at any photo and `--sources` at any
 folder of images. Portraits-of-friends as tiles, a group photo as target,
 is the classic demo.
@@ -89,11 +147,20 @@ There's also a Gradio UI over the same pipeline:
 grid, features, k-means (k-means++ seeding, restarts by lowest inertia,
 Lloyd iterations), cluster-first matching and variety penalty, with the
 Pygame fly-in re-implemented on canvas. The math runs in a web worker; the
-tile library ships as a single sprite atlas.
+tile library ships as a single sprite atlas. No framework, no charting
+library — the plots are ~400 lines of canvas in `web/src/lib/charts.ts`.
 
 The port is verified against the Python implementation rather than just
 eyeballed: feature vectors agree to float32 precision (max absolute
 difference `9.9e-6` on values scaled to 255).
+
+Video export uses `captureStream` + `MediaRecorder`, so the encode happens
+in the tab and the file goes straight to the visitor's downloads. Frames are
+pulled manually (`captureStream(0)` + `requestFrame`) so the recording holds
+exactly the frames that were painted even if the tab drops below 60 fps. The
+watermark is drawn by the animation itself rather than composited afterwards
+— the clip is signed by construction, from the same glyph geometry the
+Python side uses (`src/brand.py` ⇄ `web/src/lib/brand.ts`).
 
 ```bash
 .venv/bin/python scripts/make_web_assets.py   # pack assets/sources into a sprite atlas
@@ -197,8 +264,12 @@ of latent structure.
 
 ```
 src/            the pipeline: grid, sources, features, cluster, matching, render, animate
+src/brand.py    the Preciado Tech mark + the video watermark
 src/ui.py       Gradio UI over the same pipeline
-web/            TypeScript port + the deployed demo site
+web/src/lib/    the TypeScript port, one module per stage
+web/src/lib/charts.ts      convergence, restarts, k sweep, feature space — hand-drawn canvas
+web/src/lib/projection.ts  PCA to 2-D by power iteration
+web/src/lib/record.ts      in-browser video capture
 scripts/        demo asset generation, web atlas packing, feature evaluation
 assets/         demo target + synthetic source library
 ```

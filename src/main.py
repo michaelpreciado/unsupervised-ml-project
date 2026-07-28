@@ -35,6 +35,12 @@ def parse_args():
                    help="skip the brute-force timing comparison")
     p.add_argument("--animate", action="store_true",
                    help="play the Pygame fly-in animation")
+    p.add_argument("--record", metavar="PATH", nargs="?",
+                   const="output/mosaic.mp4",
+                   help="render the animation to a watermarked video instead "
+                        "of playing it (default output/mosaic.mp4)")
+    p.add_argument("--no-watermark", action="store_true",
+                   help="omit the Preciado Tech corner signature")
     p.add_argument("--out", default="output")
     return p.parse_args()
 
@@ -90,9 +96,15 @@ def main():
         choice, tiles, rows, cols, args.tile_size, out / "mosaic.png")
     print(f"mosaic -> {mosaic_path}")
 
-    if args.animate:
+    if args.record:
         from . import animate
-        animate.animate(choice, tiles, rows, cols, args.tile_size)
+        path = animate.record(choice, tiles, rows, cols, args.tile_size,
+                              args.record, watermark=not args.no_watermark)
+        print(f"animation -> {path}")
+    elif args.animate:
+        from . import animate
+        animate.animate(choice, tiles, rows, cols, args.tile_size,
+                        watermark=not args.no_watermark)
 
 
 if __name__ == "__main__":
