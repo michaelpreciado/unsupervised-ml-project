@@ -141,6 +141,30 @@
               />
               <span>Use a folder of your own photos</span>
             </label>
+
+            <div class="source-stream">
+              <p class="hint">Or grab a fast batch — no need to collect photos one by one:</p>
+              <div class="source-google-row">
+                <input
+                  id="source-query"
+                  type="text"
+                  placeholder="e.g. mountains, architecture, faces"
+                  list="source-quick-ideas"
+                  autocomplete="off"
+                />
+                <datalist id="source-quick-ideas">
+                  <option value="landscapes"></option>
+                  <option value="city architecture"></option>
+                  <option value="wildlife"></option>
+                  <option value="abstract art"></option>
+                  <option value="faces"></option>
+                  <option value="flowers"></option>
+                  <option value="space"></option>
+                  <option value="ocean"></option>
+                </datalist>
+                <button id="source-google" class="btn" type="button">Pull from Google</button>
+              </div>
+            </div>
             <button id="reset-library" class="linkish" type="button" hidden>
               Back to the demo library
             </button>

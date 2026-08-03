@@ -10,7 +10,7 @@
 import './style.css';
 import { animate } from './lib/animate';
 import type { AnimationHandle } from './lib/animate';
-import { markSvg } from './lib/brand';
+import { drawMark, markSvg } from './lib/brand';
 import {
   drawContactSheet,
   drawClusterMap,
@@ -24,7 +24,7 @@ import { cellMeans, gridTarget } from './lib/grid';
 import { attachInspector } from './lib/inspect';
 import { startRain } from './lib/matrix';
 import { canRecord, saveBlob, startRecording } from './lib/record';
-import { loadAtlas, loadFiles } from './lib/tiles';
+import { loadAtlas, loadDataUrls, loadFiles } from './lib/tiles';
 import type {
   FeatureKind,
   KScanPoint,
@@ -37,6 +37,7 @@ const PRESETS = [
   { id: 'sunset', label: 'Sunset', url: '/demo/demo_sunset.png' },
   { id: 'gradient', label: 'Spectrum', url: '' },
   { id: 'portrait', label: 'Rings', url: '' },
+  { id: 'preciado', label: 'Preciado Tech', url: '' },
 ];
 
 const SCAN_FROM = 2;
@@ -92,6 +93,7 @@ interface State {
   target: ImageBitmap | null;
   targetName: string;
   userFiles: File[] | null;
+  googleUrls: string[] | null;
   tiles: TileSet | null;
   tilesSize: number;
   result: PipelineResult | null;
@@ -109,6 +111,7 @@ const state: State = {
   target: null,
   targetName: 'sunset',
   userFiles: null,
+  googleUrls: null,
   tiles: null,
   tilesSize: 0,
   result: null,
@@ -182,6 +185,22 @@ function generatePreset(id: string): HTMLCanvasElement {
     }
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+  } else if (id === 'preciado') {
+    // The brand mark centred on a dark plate — a museum-piece target that
+    // shows the whole demo rebuilding the Preciado Tech identity.
+    ctx.fillStyle = '#0a0f14';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const size = Math.round(canvas.width * 0.62);
+    const x = (canvas.width - size) / 2;
+    const y = (canvas.height - size) / 2;
+    ctx.beginPath();
+    ctx.roundRect(x - size * 0.14, y - size * 0.14, size * 1.28, size * 1.28, size * 0.08);
+    ctx.fillStyle = 'rgba(28, 46, 60, 0.55)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(92, 225, 242, 0.35)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    drawMark(ctx, x, y, size, { ink: '#f2f6fa', node: '#5ce1f2', glow: true });
   } else {
     ctx.fillStyle = '#0e1118';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -250,6 +269,7 @@ $<HTMLInputElement>('source-files').addEventListener('change', async (event) => 
   const files = Array.from((event.target as HTMLInputElement).files ?? []);
   if (!files.length) return;
   state.userFiles = files;
+  state.googleUrls = null;
   state.tiles = null;
   state.tilesSize = 0;
   state.scan = null;
@@ -257,14 +277,77 @@ $<HTMLInputElement>('source-files').addEventListener('change', async (event) => 
   await run();
 });
 
-resetLibraryButton.addEventListener('click', async () => {
+/** Clear whatever source was active so ensureTiles falls back to the atlas. */
+function clearUserSource() {
   state.userFiles = null;
+  state.googleUrls = null;
   state.tiles = null;
   state.tilesSize = 0;
   state.scan = null;
-  resetLibraryButton.hidden = true;
   $<HTMLInputElement>('source-files').value = '';
+}
+
+resetLibraryButton.addEventListener('click', async () => {
+  clearUserSource();
+  resetLibraryButton.hidden = true;
   await run();
+});
+
+const googleButton = $<HTMLButtonElement>('source-google');
+const googleQuery = $<HTMLInputElement>('source-query');
+
+async function pullFromGoogle() {
+  const query = googleQuery.value.trim();
+  if (!query || state.busy) return;
+  googleButton.disabled = true;
+  googleButton.textContent = 'Pulling…';
+  setBusy(true);
+  hideError();
+  try {
+    setStatus(`Asking Google for "${query}"…`);
+    const res = await fetch(`/api/images?q=${encodeURIComponent(query)}&n=120`);
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok || !data.ok) {
+      const msg = data.setup
+        ? 'Google tile search is not configured on this deployment yet — using the bundled demo library. (Set GOOGLE_CSE_KEY + GOOGLE_CSE_CX server-side to enable it.)'
+        : (data.error ?? 'Could not pull images from Google.');
+      showError(msg);
+      // Graceful fallback: keep the current library / atlas rather than fail.
+      googleButton.disabled = false;
+      googleButton.textContent = 'Pull from Google';
+      setBusy(false);
+      return;
+    }
+
+    const tileSize = Number($<HTMLInputElement>('in-tile').value);
+    const tiles = await loadDataUrls(data.tiles, tileSize, (done, total) =>
+      setStatus(`Decoding ${done}/${total} images…`),
+    );
+
+    // Store the raw list so re-tiling at any size stays cheap; the TileSet
+    // below is the at-current-size decode we already have.
+    state.googleUrls = data.tiles;
+    state.userFiles = null;
+    state.tiles = tiles;
+    state.tilesSize = tileSize;
+    state.scan = null;
+    resetLibraryButton.hidden = false;
+    libraryLabel.textContent = `Google · "${query}" — ${tiles.count} tiles`;
+
+    await run();
+  } catch (error) {
+    showError(error instanceof Error ? error.message : String(error));
+  } finally {
+    googleButton.disabled = false;
+    googleButton.textContent = 'Pull from Google';
+    setBusy(false);
+  }
+}
+
+googleButton.addEventListener('click', () => void pullFromGoogle());
+googleQuery.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') void pullFromGoogle();
 });
 
 /** Tiles are cached per tile size; changing the size forces a reload. */
@@ -275,14 +358,20 @@ async function ensureTiles(tileSize: number): Promise<TileSet> {
     ? await loadFiles(state.userFiles, tileSize, 1200, (done, total) => {
         setStatus(`Reading your photos… ${done}/${total}`);
       })
-    : await loadAtlas(tileSize);
+    : state.googleUrls
+      ? await loadDataUrls(state.googleUrls, tileSize, (done, total) =>
+          setStatus(`Mapping Google tiles… ${done}/${total}`),
+        )
+      : await loadAtlas(tileSize);
 
   state.tiles = tiles;
   state.tilesSize = tileSize;
   state.scan = null;
   libraryLabel.textContent = state.userFiles
     ? `Your folder — ${tiles.count} tiles`
-    : `Bundled demo library — ${tiles.count} tiles`;
+    : state.googleUrls
+      ? `Google library — ${tiles.count} tiles`
+      : `Bundled demo library — ${tiles.count} tiles`;
   return tiles;
 }
 

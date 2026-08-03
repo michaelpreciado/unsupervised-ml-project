@@ -356,6 +356,43 @@ em {
   text-decoration: underline;
 }
 
+/* ---------------------------------------------------- source: Google stream */
+.source-stream {
+  margin-bottom: 0.9rem;
+}
+.source-stream .hint {
+  margin-bottom: 0.4rem;
+}
+.source-google-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: stretch;
+}
+.source-google-row input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: 7px;
+  border: 1px solid rgba(120, 214, 240, 0.18);
+  background: rgba(8, 12, 18, 0.6);
+  color: #dff3fa;
+  font: inherit;
+  font-size: 0.85rem;
+  outline: none;
+}
+.source-google-row input[type="text"]:focus {
+  border-color: rgba(120, 214, 240, 0.5);
+  box-shadow: var(--glow);
+}
+.source-google-row .btn {
+  white-space: nowrap;
+  padding: 0.55rem 0.8rem;
+}
+#source-google[disabled] {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
 /* --------------------------------------------------------------- studio */
 
 .studio {

@@ -121,3 +121,65 @@ export async function loadFiles(
   onProgress?.(usable.length, usable.length);
   return { data, count: chunks.length, size: tileSize };
 }
+
+/** Read a canvas region (up to tileSize) into one packed tile of RGB bytes. */
+function readTile(ctx: CanvasRenderingContext2D, left: number, top: number, side: number, tile: Uint8Array) {
+  const { data: rgba } = ctx.getImageData(left, top, side, side);
+  for (let y = 0; y < side; y++) {
+    const srcRow = y * side * 4;
+    const dRow = y * side * 3;
+    for (let x = 0; x < side; x++) {
+      const s = srcRow + x * 4;
+      const d = dRow + x * 3;
+      tile[d] = rgba[s];
+      tile[d + 1] = rgba[s + 1];
+      tile[d + 2] = rgba[s + 2];
+    }
+  }
+}
+
+/**
+ * Build a TileSet from an array of data-URL images (e.g. the batch returned by
+ * the Google proxy). Cross-origin images cannot be read by the canvas, which
+ * is exactly why the proxy hands us base64 data-URLs instead of remote URLs.
+ */
+export async function loadDataUrls(
+  dataUrls: string[],
+  tileSize: number,
+  onProgress?: (done: number, total: number) => void,
+): Promise<TileSet> {
+  const px = tileSize * tileSize;
+  const canvas = document.createElement('canvas');
+  canvas.width = tileSize + 4;
+  canvas.height = tileSize + 4;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+  ctx.imageSmoothingQuality = 'high';
+
+  const chunks: Uint8Array[] = [];
+  for (let i = 0; i < dataUrls.length; i++) {
+    let bitmap: ImageBitmap;
+    try {
+      bitmap = await createImageBitmap(await (await fetch(dataUrls[i])).blob());
+    } catch {
+      continue; // undecodable — skip
+    }
+    const side = Math.min(bitmap.width, bitmap.height, tileSize);
+    const left = (bitmap.width - side) / 2;
+    const top = (bitmap.height - side) / 2;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, left, top, side, side, 0, 0, tileSize, tileSize);
+    bitmap.close();
+
+    const tile = new Uint8Array(px * 3);
+    readTile(ctx, 0, 0, tileSize, tile);
+    chunks.push(tile);
+    if (onProgress) onProgress(i + 1, dataUrls.length);
+  }
+
+  if (!chunks.length) throw new Error('None of the pulled images could be decoded');
+  const data = new Uint8Array(chunks.length * px * 3);
+  chunks.forEach((tile, i) => data.set(tile, i * px * 3));
+  onProgress?.(dataUrls.length, dataUrls.length);
+  return { data, count: chunks.length, size: tileSize };
+}
