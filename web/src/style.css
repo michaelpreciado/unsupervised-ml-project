@@ -178,6 +178,62 @@ em {
   pointer-events: none;
 }
 
+/* Pointer-tracked sheen: main.ts feeds --mx/--my (px, relative to the
+ * panel). A single radial gradient, composited on hover only. */
+.panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    380px circle at var(--mx, 50%) var(--my, 0%),
+    rgba(120, 225, 245, 0.09),
+    transparent 60%
+  );
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+
+.panel:hover::after {
+  opacity: 1;
+}
+
+/* Sections rise into place as they scroll in (class added from main.ts, so
+ * the page is fully visible without JS). */
+.reveal-ready {
+  opacity: 0;
+  transform: translateY(18px);
+  transition:
+    opacity 0.7s cubic-bezier(0.2, 0.7, 0.2, 1),
+    transform 0.7s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.reveal-ready.in {
+  opacity: 1;
+  transform: none;
+}
+
+/* Hero headline: a one-shot light sweep across the type. */
+.hero h1 {
+  background: linear-gradient(
+      100deg,
+      var(--text) 40%,
+      #bff6ff 50%,
+      var(--text) 60%
+    )
+    200% 0 / 250% 100% no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: h1-sheen 2.6s 0.5s cubic-bezier(0.3, 0.6, 0.2, 1) 1 forwards;
+}
+
+@keyframes h1-sheen {
+  to {
+    background-position: -100% 0;
+  }
+}
+
 /* ----------------------------------------------------------------- hero */
 
 .hero {
@@ -1220,6 +1276,25 @@ section {
   box-shadow: var(--glow);
 }
 
+/* Tile magnify: the contact sheet leans toward the pointer (--rx/--ry set
+ * from main.ts) and the image inside zooms slightly. */
+.cluster {
+  perspective: 600px;
+  transform-style: preserve-3d;
+}
+
+.cluster:hover {
+  transform: translateY(-3px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+}
+
+.cluster canvas {
+  transition: transform 0.35s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.cluster:hover canvas {
+  transform: scale(1.12);
+}
+
 .cluster canvas {
   width: 100%;
   height: auto;
@@ -1513,7 +1588,24 @@ footer {
   }
 
   .btn:hover:not(:disabled),
-  .cluster:hover {
+  .cluster:hover,
+  .cluster:hover canvas {
     transform: none;
+  }
+
+  .reveal-ready {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+
+  .hero h1 {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: currentColor;
+  }
+
+  .panel::after {
+    display: none;
   }
 }

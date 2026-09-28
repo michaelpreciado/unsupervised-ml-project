@@ -130,6 +130,73 @@ const state: State = {
 $('brand-mark').innerHTML = markSvg(30);
 $('footer-mark').innerHTML = markSvg(18);
 startRain($<HTMLCanvasElement>('rain'));
+initSurfaceFx();
+
+/** Glass sheen, scroll reveals and tile tilt. All pointer work is
+ * delegated from one listener and coalesced into a rAF write. */
+function initSurfaceFx() {
+  if (reducedMotion.matches) return;
+  let pending: PointerEvent | null = null;
+  window.addEventListener(
+    'pointermove',
+    (e) => {
+      if (e.pointerType === 'touch') return;
+      if (!pending) requestAnimationFrame(flush);
+      pending = e;
+    },
+    { passive: true },
+  );
+  function flush() {
+    const e = pending;
+    pending = null;
+    if (!e || !(e.target instanceof Element)) return;
+    const panel = e.target.closest<HTMLElement>('.panel');
+    if (panel) {
+      const r = panel.getBoundingClientRect();
+      panel.style.setProperty('--mx', `${e.clientX - r.left}px`);
+      panel.style.setProperty('--my', `${e.clientY - r.top}px`);
+    }
+    const cluster = e.target.closest<HTMLElement>('.cluster');
+    if (cluster) {
+      const r = cluster.getBoundingClientRect();
+      const nx = (e.clientX - r.left) / r.width - 0.5;
+      const ny = (e.clientY - r.top) / r.height - 0.5;
+      cluster.style.setProperty('--ry', `${(nx * 10).toFixed(2)}deg`);
+      cluster.style.setProperty('--rx', `${(-ny * 10).toFixed(2)}deg`);
+    }
+  }
+  document.addEventListener(
+    'pointerout',
+    (e) => {
+      const c = (e.target as Element | null)?.closest?.<HTMLElement>('.cluster');
+      if (c && !c.contains(e.relatedTarget as Node | null)) {
+        c.style.removeProperty('--rx');
+        c.style.removeProperty('--ry');
+      }
+    },
+    { passive: true },
+  );
+
+  if (!('IntersectionObserver' in window)) return;
+  const io = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        entry.target.classList.add('in');
+        io.unobserve(entry.target);
+      }
+    },
+    { rootMargin: '0px 0px -8% 0px', threshold: 0.04 },
+  );
+  document
+    .querySelectorAll<HTMLElement>('main > section:not(#studio)')
+    .forEach((el) => {
+      // Sections already on screen must not flash to hidden and back.
+      if (el.getBoundingClientRect().top < window.innerHeight) return;
+      el.classList.add('reveal-ready');
+      io.observe(el);
+    });
+}
 
 /* ---------------------------------------------------------------- inputs */
 
