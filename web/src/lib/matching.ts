@@ -62,12 +62,14 @@ function greedy(
 
   // Pass 1: each cell's raw nearest distance, so the penalty can be scaled
   // from the data (median) exactly like the Python version.
-  const rows: Float64Array[] = new Array(n);
+  // Float32 halves the footprint of the cells x candidates matrix, which is
+  // the dominant allocation for large grids against big libraries.
+  const rows: Float32Array[] = new Array(n);
   const mins = new Float64Array(n);
   for (let i = 0; i < n; i++) {
     const cand = candidates[i];
     const m = cand ? cand.length : allTiles;
-    const row = new Float64Array(m);
+    const row = new Float32Array(m);
     let min = Infinity;
     for (let j = 0; j < m; j++) {
       const t = cand ? cand[j] : j;

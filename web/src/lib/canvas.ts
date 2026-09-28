@@ -40,20 +40,20 @@ export function drawMosaic(
   const ctx = canvas.getContext('2d')!;
   const px = t * t;
   const image = ctx.createImageData(canvas.width, canvas.height);
+  // One 32-bit store per pixel instead of four byte stores (little-endian
+  // ABGR, which every browser this targets is).
+  const out = new Uint32Array(image.data.buffer);
+  const src = tiles.data;
 
   for (let i = 0; i < choice.length; i++) {
     const r = Math.floor(i / cols);
     const c = i % cols;
     const base = choice[i] * px * 3;
     for (let y = 0; y < t; y++) {
-      let d = ((r * t + y) * canvas.width + c * t) * 4;
+      let d = (r * t + y) * canvas.width + c * t;
       let s = base + y * t * 3;
       for (let x = 0; x < t; x++) {
-        image.data[d] = tiles.data[s];
-        image.data[d + 1] = tiles.data[s + 1];
-        image.data[d + 2] = tiles.data[s + 2];
-        image.data[d + 3] = 255;
-        d += 4;
+        out[d++] = 0xff000000 | (src[s + 2] << 16) | (src[s + 1] << 8) | src[s];
         s += 3;
       }
     }

@@ -25,6 +25,7 @@ import { attachInspector } from './lib/inspect';
 import { startRain } from './lib/matrix';
 import { canRecord, saveBlob, startRecording } from './lib/record';
 import { loadAtlas, loadDataUrls, loadFiles } from './lib/tiles';
+import type { Library, Lod } from './lib/tiles';
 import type {
   FeatureKind,
   KScanPoint,
@@ -73,6 +74,9 @@ const restartCanvas = $<HTMLCanvasElement>('restart-canvas');
 const kscanCanvas = $<HTMLCanvasElement>('kscan-canvas');
 const overlay = $('stage-overlay');
 const statusText = $('stage-status');
+const progressBar = $('stage-progress');
+const progressFill = progressBar.firstElementChild as HTMLElement;
+const cancelButton = $<HTMLButtonElement>('stage-cancel');
 const errorBox = $('error');
 const runButton = $<HTMLButtonElement>('run');
 const replayButton = $<HTMLButtonElement>('replay');
@@ -86,7 +90,15 @@ const scrub = $('scrub');
 const scrubFill = scrub.firstElementChild as HTMLElement;
 const recDot = $('rec-dot');
 
-const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+let worker = spawnWorker();
+
+function spawnWorker(): Worker {
+  const w = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+  // A worker that dies (out of memory on a huge library, a bug) must reject
+  // the pending request rather than leave the overlay spinning forever.
+  w.addEventListener('error', (event) => failPending(event.message || 'The worker crashed.'));
+  return w;
+}
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 interface State {
@@ -95,6 +107,8 @@ interface State {
   userFiles: File[] | null;
   googleUrls: string[] | null;
   tiles: TileSet | null;
+  lod: Lod | null;
+  skipped: number;
   tilesSize: number;
   result: PipelineResult | null;
   animation: AnimationHandle | null;
@@ -113,6 +127,8 @@ const state: State = {
   userFiles: null,
   googleUrls: null,
   tiles: null,
+  lod: null,
+  skipped: 0,
   tilesSize: 0,
   result: null,
   animation: null,
@@ -388,15 +404,16 @@ async function pullFromGoogle() {
     }
 
     const tileSize = Number($<HTMLInputElement>('in-tile').value);
-    const tiles = await loadDataUrls(data.tiles, tileSize, (done, total) =>
-      setStatus(`Decoding ${done}/${total} images…`),
+    const lib = await loadDataUrls(data.tiles, tileSize, (done, total) =>
+      setStatus(`Decoding ${done}/${total} images…`, done / total),
     );
+    const tiles = lib.tiles;
+    setLibrary(lib);
 
     // Store the raw list so re-tiling at any size stays cheap; the TileSet
     // below is the at-current-size decode we already have.
     state.googleUrls = data.tiles;
     state.userFiles = null;
-    state.tiles = tiles;
     state.tilesSize = tileSize;
     state.scan = null;
     resetLibraryButton.hidden = false;
@@ -417,25 +434,37 @@ googleQuery.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') void pullFromGoogle();
 });
 
+function setLibrary(lib: Library) {
+  if (state.lod && state.lod.source !== lib.lod?.source && 'close' in state.lod.source) {
+    (state.lod.source as ImageBitmap).close();
+  }
+  state.tiles = lib.tiles;
+  state.lod = lib.lod;
+}
+
 /** Tiles are cached per tile size; changing the size forces a reload. */
 async function ensureTiles(tileSize: number): Promise<TileSet> {
   if (state.tiles && state.tilesSize === tileSize) return state.tiles;
 
-  const tiles = state.userFiles
-    ? await loadFiles(state.userFiles, tileSize, 1200, (done, total) => {
-        setStatus(`Reading your photos… ${done}/${total}`);
-      })
-    : state.googleUrls
-      ? await loadDataUrls(state.googleUrls, tileSize, (done, total) =>
-          setStatus(`Mapping Google tiles… ${done}/${total}`),
-        )
-      : await loadAtlas(tileSize);
-
-  state.tiles = tiles;
+  let lib: Library & { skipped?: number };
+  if (state.userFiles) {
+    lib = await loadFiles(state.userFiles, tileSize, 1200, (done, total) =>
+      setStatus(`Reading your photos… ${done}/${total}`, done / total),
+    );
+  } else if (state.googleUrls) {
+    lib = await loadDataUrls(state.googleUrls, tileSize, (done, total) =>
+      setStatus(`Mapping Google tiles… ${done}/${total}`, done / total),
+    );
+  } else {
+    lib = await loadAtlas(tileSize);
+  }
+  const tiles = lib.tiles;
+  setLibrary(lib);
+  state.skipped = lib.skipped ?? 0;
   state.tilesSize = tileSize;
   state.scan = null;
   libraryLabel.textContent = state.userFiles
-    ? `Your folder — ${tiles.count} tiles`
+    ? `Your folder — ${tiles.count} tiles${state.skipped ? ` (${state.skipped} unreadable, skipped)` : ''}`
     : state.googleUrls
       ? `Google library — ${tiles.count} tiles`
       : `Bundled demo library — ${tiles.count} tiles`;
@@ -446,17 +475,47 @@ async function ensureTiles(tileSize: number): Promise<TileSet> {
 
 let requestId = 0;
 
-function ask<T>(message: Record<string, unknown>, key: 'result' | 'scan'): Promise<T> {
+let pendingReject: ((error: Error) => void) | null = null;
+
+function failPending(message: string) {
+  pendingReject?.(new Error(message));
+  pendingReject = null;
+}
+
+/** Abort the in-flight request by replacing the worker outright — the only
+ * way to stop a synchronous loop. Cheap: the worker holds no state. */
+function cancelWork() {
+  if (!pendingReject) return;
+  worker.terminate();
+  worker = spawnWorker();
+  failPending('Cancelled.');
+}
+
+function ask<T>(
+  message: Record<string, unknown>,
+  key: 'result' | 'scan',
+  onProgress?: (fraction: number, label: string) => void,
+): Promise<T> {
   const id = ++requestId;
   return new Promise((resolve, reject) => {
+    const target = worker;
     const onMessage = (event: MessageEvent) => {
       if (event.data.id !== id) return;
-      worker.removeEventListener('message', onMessage);
+      if (event.data.kind === 'progress') {
+        onProgress?.(event.data.fraction, event.data.label);
+        return;
+      }
+      target.removeEventListener('message', onMessage);
+      pendingReject = null;
       if (event.data.ok) resolve(event.data[key] as T);
       else reject(new Error(event.data.error));
     };
-    worker.addEventListener('message', onMessage);
-    worker.postMessage({ ...message, id });
+    pendingReject = (error) => {
+      target.removeEventListener('message', onMessage);
+      reject(error);
+    };
+    target.addEventListener('message', onMessage);
+    target.postMessage({ ...message, id });
   });
 }
 
@@ -481,6 +540,10 @@ async function run() {
     const result = await ask<PipelineResult>(
       { kind: 'run', cells, cellMeans: means, rows, cols, tiles, params },
       'result',
+      (fraction, label) => {
+        setStatus(label, fraction);
+        overlay.classList.add('can-cancel');
+      },
     );
     state.result = result;
     state.highlight = null;
@@ -496,7 +559,9 @@ async function run() {
     overlay.classList.add('hidden');
     await showView(state.view, true);
   } catch (error) {
-    showError(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    if (message !== 'Cancelled.') showError(message);
+    // Cancelling leaves the previous result on screen, if there was one.
     overlay.classList.add('hidden');
   } finally {
     state.busy = false;
@@ -505,6 +570,7 @@ async function run() {
 }
 
 runButton.addEventListener('click', () => void run());
+cancelButton.addEventListener('click', cancelWork);
 
 /* -------------------------------------------------------------- stage views */
 
@@ -978,9 +1044,15 @@ function renderBenchmark(result: PipelineResult) {
 
 /* ----------------------------------------------------------------- chrome */
 
-function setStatus(message: string) {
+function setStatus(message: string, fraction?: number) {
   statusText.textContent = message;
   overlay.classList.remove('hidden');
+  overlay.classList.toggle('has-progress', fraction !== undefined);
+  overlay.classList.remove('can-cancel');
+  if (fraction !== undefined) {
+    progressFill.style.width = `${Math.round(fraction * 100)}%`;
+    progressBar.setAttribute('aria-valuenow', String(Math.round(fraction * 100)));
+  }
 }
 
 function setBusy(busy: boolean) {

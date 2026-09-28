@@ -52,6 +52,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       request.cols,
       request.tiles,
       request.params,
+      (stage, fraction, label) => post({ kind: 'progress', id: request.id, stage, fraction, label }),
     );
     post({ id: request.id, ok: true, result }, [
       result.choice.buffer,

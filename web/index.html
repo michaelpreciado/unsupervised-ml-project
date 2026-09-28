@@ -82,7 +82,9 @@
             <div class="rec-dot" id="rec-dot" hidden>REC</div>
             <div id="stage-overlay" class="overlay">
               <div class="spinner"></div>
-              <p id="stage-status">Loading tile library…</p>
+              <p id="stage-status" role="status">Loading tile library…</p>
+              <div class="progress" id="stage-progress" role="progressbar" aria-label="Pipeline progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div>
+              <button type="button" class="linkish" id="stage-cancel">Cancel</button>
             </div>
             <div class="scrub" id="scrub" aria-hidden="true"><i></i></div>
           </figure>

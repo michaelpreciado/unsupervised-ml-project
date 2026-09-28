@@ -6,6 +6,28 @@
 
 import type { TileSet } from './types';
 
+/** A higher-resolution copy of the library, kept as one sprite sheet on the
+ * main thread only (it never goes to the worker). The deep-zoom viewer and
+ * the hi-res export read from it, so zooming in shows real photo detail
+ * instead of a 16 px tile blown up. */
+export interface Lod {
+  source: CanvasImageSource;
+  /** Edge of one tile in the sheet, in px. */
+  size: number;
+  cols: number;
+  count: number;
+}
+
+export interface Library {
+  tiles: TileSet;
+  lod: Lod | null;
+}
+
+export const LOD_SIZE = 64;
+/** Decodes in flight at once. Enough to keep the decoder busy, few enough
+ * that four 12-megapixel photos never sit in memory together. */
+const CONCURRENCY = 4;
+
 interface AtlasManifest {
   count: number;
   tileSize: number;
@@ -15,7 +37,7 @@ interface AtlasManifest {
 }
 
 /** Read `count` tiles out of one atlas image, resampled to tileSize. */
-export async function loadAtlas(tileSize: number, manifestUrl = '/tiles/atlas.json'): Promise<TileSet> {
+export async function loadAtlas(tileSize: number, manifestUrl = '/tiles/atlas.json'): Promise<Library> {
   const manifest: AtlasManifest = await fetch(manifestUrl).then((r) => {
     if (!r.ok) throw new Error(`Could not load the tile atlas (${r.status})`);
     return r.json();
@@ -31,9 +53,11 @@ export async function loadAtlas(tileSize: number, manifestUrl = '/tiles/atlas.js
   const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  bitmap.close();
 
-  return sliceGrid(ctx, canvas.width, manifest.cols, tileSize, manifest.count);
+  // Keep the atlas at its native resolution as the LOD sheet: it is already
+  // decoded, so the sharpest level of detail costs nothing extra.
+  const lod: Lod = { source: bitmap, size: manifest.tileSize, cols: manifest.cols, count: manifest.count };
+  return { tiles: sliceGrid(ctx, canvas.width, manifest.cols, tileSize, manifest.count), lod };
 }
 
 /** Slice a rows×cols grid of tileSize cells out of a canvas context. */
@@ -68,6 +92,109 @@ function sliceGrid(
 
 export const IMAGE_TYPES = /\.(jpe?g|png|webp|bmp|gif|avif)$/i;
 
+interface Ingested {
+  tile: Uint8Array;
+}
+
+/**
+ * Decode `count` images with bounded concurrency into packed tiles plus a
+ * LOD sheet. `open(i)` yields a bitmap (or throws to skip).
+ *
+ * Each worker loop owns its own scratch canvas, so decodes overlap without
+ * sharing a context, and every bitmap is closed the moment it has been
+ * sampled — peak memory is CONCURRENCY decoded images, not the whole set.
+ */
+async function ingest(
+  count: number,
+  tileSize: number,
+  open: (i: number) => Promise<ImageBitmap>,
+  onProgress?: (done: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<{ library: Library; skipped: number }> {
+  const px = tileSize * tileSize;
+  const lodCols = Math.max(1, Math.ceil(Math.sqrt(count)));
+  const lodCanvas = document.createElement('canvas');
+  lodCanvas.width = lodCols * LOD_SIZE;
+  lodCanvas.height = Math.ceil(count / lodCols) * LOD_SIZE;
+  const lodCtx = lodCanvas.getContext('2d')!;
+  lodCtx.imageSmoothingQuality = 'high';
+
+  const results: (Ingested | null)[] = new Array(count).fill(null);
+  let next = 0;
+  let done = 0;
+
+  const lane = async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = tileSize;
+    canvas.height = tileSize;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+    ctx.imageSmoothingQuality = 'high';
+    while (next < count) {
+      if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
+      const i = next++;
+      try {
+        const bitmap = await open(i);
+        const side = Math.min(bitmap.width, bitmap.height);
+        const left = (bitmap.width - side) / 2;
+        const top = (bitmap.height - side) / 2;
+        ctx.drawImage(bitmap, left, top, side, side, 0, 0, tileSize, tileSize);
+        // The LOD slot is keyed by source index; gaps from skipped files are
+        // squeezed out below by re-indexing.
+        lodCtx.drawImage(
+          bitmap, left, top, side, side,
+          (i % lodCols) * LOD_SIZE, Math.floor(i / lodCols) * LOD_SIZE, LOD_SIZE, LOD_SIZE,
+        );
+        bitmap.close();
+        const { data: rgba } = ctx.getImageData(0, 0, tileSize, tileSize);
+        const tile = new Uint8Array(px * 3);
+        for (let p = 0; p < px; p++) {
+          tile[p * 3] = rgba[p * 4];
+          tile[p * 3 + 1] = rgba[p * 4 + 1];
+          tile[p * 3 + 2] = rgba[p * 4 + 2];
+        }
+        results[i] = { tile };
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') throw error;
+        // not a decodable image — skip it
+      }
+      done++;
+      if (onProgress && (done % 8 === 0 || done === count)) onProgress(done, count);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, count) }, lane));
+
+  const kept = results.map((r, i) => (r ? i : -1)).filter((i) => i >= 0);
+  if (!kept.length) throw new Error('None of those files could be read as images');
+
+  const data = new Uint8Array(kept.length * px * 3);
+  kept.forEach((src, n) => data.set(results[src]!.tile, n * px * 3));
+
+  let lod: Lod;
+  if (kept.length === count) {
+    lod = { source: lodCanvas, size: LOD_SIZE, cols: lodCols, count };
+  } else {
+    // Compact the sheet so LOD index == tile index.
+    const cols = Math.max(1, Math.ceil(Math.sqrt(kept.length)));
+    const packed = document.createElement('canvas');
+    packed.width = cols * LOD_SIZE;
+    packed.height = Math.ceil(kept.length / cols) * LOD_SIZE;
+    const pctx = packed.getContext('2d')!;
+    kept.forEach((src, n) => {
+      pctx.drawImage(
+        lodCanvas,
+        (src % lodCols) * LOD_SIZE, Math.floor(src / lodCols) * LOD_SIZE, LOD_SIZE, LOD_SIZE,
+        (n % cols) * LOD_SIZE, Math.floor(n / cols) * LOD_SIZE, LOD_SIZE, LOD_SIZE,
+      );
+    });
+    lod = { source: packed, size: LOD_SIZE, cols, count: kept.length };
+  }
+  onProgress?.(count, count);
+  return {
+    library: { tiles: { data, count: kept.length, size: tileSize }, lod },
+    skipped: count - kept.length,
+  };
+}
+
 /** Load a visitor-supplied folder of images as tiles. Unreadable files are
  * skipped rather than failing the run, matching the Python loader. */
 export async function loadFiles(
@@ -75,111 +202,33 @@ export async function loadFiles(
   tileSize: number,
   maxTiles = 1200,
   onProgress?: (done: number, total: number) => void,
-): Promise<TileSet> {
+): Promise<Library & { skipped: number }> {
   const usable = files
     .filter((f) => IMAGE_TYPES.test(f.name) && !f.name.startsWith('.'))
     .sort((a, b) => a.name.localeCompare(b.name))
     .slice(0, maxTiles);
-  if (!usable.length) throw new Error('No images found in that folder');
-
-  const px = tileSize * tileSize;
-  const canvas = document.createElement('canvas');
-  canvas.width = tileSize;
-  canvas.height = tileSize;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-  ctx.imageSmoothingQuality = 'high';
-
-  const chunks: Uint8Array[] = [];
-  for (let i = 0; i < usable.length; i++) {
-    let bitmap: ImageBitmap;
-    try {
-      bitmap = await createImageBitmap(usable[i]);
-    } catch {
-      continue; // not a decodable image — skip it
-    }
-    const side = Math.min(bitmap.width, bitmap.height);
-    const left = (bitmap.width - side) / 2;
-    const top = (bitmap.height - side) / 2;
-    ctx.drawImage(bitmap, left, top, side, side, 0, 0, tileSize, tileSize);
-    bitmap.close();
-
-    const { data: rgba } = ctx.getImageData(0, 0, tileSize, tileSize);
-    const tile = new Uint8Array(px * 3);
-    for (let p = 0; p < px; p++) {
-      tile[p * 3] = rgba[p * 4];
-      tile[p * 3 + 1] = rgba[p * 4 + 1];
-      tile[p * 3 + 2] = rgba[p * 4 + 2];
-    }
-    chunks.push(tile);
-    if (onProgress && i % 25 === 0) onProgress(i + 1, usable.length);
-  }
-
-  if (!chunks.length) throw new Error('None of those files could be read as images');
-
-  const data = new Uint8Array(chunks.length * px * 3);
-  chunks.forEach((tile, i) => data.set(tile, i * px * 3));
-  onProgress?.(usable.length, usable.length);
-  return { data, count: chunks.length, size: tileSize };
-}
-
-/** Read a canvas region (up to tileSize) into one packed tile of RGB bytes. */
-function readTile(ctx: CanvasRenderingContext2D, left: number, top: number, side: number, tile: Uint8Array) {
-  const { data: rgba } = ctx.getImageData(left, top, side, side);
-  for (let y = 0; y < side; y++) {
-    const srcRow = y * side * 4;
-    const dRow = y * side * 3;
-    for (let x = 0; x < side; x++) {
-      const s = srcRow + x * 4;
-      const d = dRow + x * 3;
-      tile[d] = rgba[s];
-      tile[d + 1] = rgba[s + 1];
-      tile[d + 2] = rgba[s + 2];
-    }
-  }
+  if (!usable.length) throw new Error('No images found in that folder — try a folder of JPEG, PNG or WebP photos.');
+  const { library, skipped } = await ingest(usable.length, tileSize, (i) => createImageBitmap(usable[i]), onProgress);
+  return { ...library, skipped };
 }
 
 /**
- * Build a TileSet from an array of data-URL images (e.g. the batch returned by
- * the Google proxy). Cross-origin images cannot be read by the canvas, which
- * is exactly why the proxy hands us base64 data-URLs instead of remote URLs.
+ * Build a library from an array of data-URL images (e.g. the batch returned
+ * by the Google proxy). Cross-origin images cannot be read by the canvas,
+ * which is exactly why the proxy hands us base64 data-URLs instead of
+ * remote URLs.
  */
 export async function loadDataUrls(
   dataUrls: string[],
   tileSize: number,
   onProgress?: (done: number, total: number) => void,
-): Promise<TileSet> {
-  const px = tileSize * tileSize;
-  const canvas = document.createElement('canvas');
-  canvas.width = tileSize + 4;
-  canvas.height = tileSize + 4;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-  ctx.imageSmoothingQuality = 'high';
-
-  const chunks: Uint8Array[] = [];
-  for (let i = 0; i < dataUrls.length; i++) {
-    let bitmap: ImageBitmap;
-    try {
-      bitmap = await createImageBitmap(await (await fetch(dataUrls[i])).blob());
-    } catch {
-      continue; // undecodable — skip
-    }
-    const side = Math.min(bitmap.width, bitmap.height, tileSize);
-    const left = (bitmap.width - side) / 2;
-    const top = (bitmap.height - side) / 2;
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(bitmap, left, top, side, side, 0, 0, tileSize, tileSize);
-    bitmap.close();
-
-    const tile = new Uint8Array(px * 3);
-    readTile(ctx, 0, 0, tileSize, tile);
-    chunks.push(tile);
-    if (onProgress) onProgress(i + 1, dataUrls.length);
-  }
-
-  if (!chunks.length) throw new Error('None of the pulled images could be decoded');
-  const data = new Uint8Array(chunks.length * px * 3);
-  chunks.forEach((tile, i) => data.set(tile, i * px * 3));
-  onProgress?.(dataUrls.length, dataUrls.length);
-  return { data, count: chunks.length, size: tileSize };
+): Promise<Library> {
+  if (!dataUrls.length) throw new Error('The search returned no images.');
+  const { library } = await ingest(
+    dataUrls.length,
+    tileSize,
+    async (i) => createImageBitmap(await (await fetch(dataUrls[i])).blob()),
+    onProgress,
+  );
+  return library;
 }

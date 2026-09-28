@@ -634,6 +634,36 @@ em {
   pointer-events: none;
 }
 
+.progress {
+  width: min(280px, 70%);
+  height: 3px;
+  border-radius: 3px;
+  background: rgba(92, 225, 242, 0.14);
+  overflow: hidden;
+  display: none;
+}
+
+.progress i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--cyan);
+  box-shadow: 0 0 10px var(--cyan);
+  transition: width 0.2s ease-out;
+}
+
+.overlay.has-progress .progress {
+  display: block;
+}
+
+.overlay #stage-cancel {
+  display: none;
+}
+
+.overlay.can-cancel #stage-cancel {
+  display: inline;
+}
+
 .spinner {
   width: 34px;
   height: 34px;

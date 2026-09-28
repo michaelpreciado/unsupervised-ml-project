@@ -23,6 +23,15 @@ export interface KMeansStep {
   shift: number;
 }
 
+/** One Lloyd iteration as it looked on screen: where the centres stood when
+ * the assignment was made, and what that assignment was. Replaying these is
+ * what lets the page animate the fit instead of only plotting its summary. */
+export interface KMeansFrame {
+  centroids: Float32Array;
+  labels: Uint8Array;
+  inertia: number;
+}
+
 export interface KMeansModel {
   k: number;
   dims: number;
@@ -33,6 +42,8 @@ export interface KMeansModel {
   inertia: number;
   /** Convergence trace of the restart that won. */
   trace: KMeansStep[];
+  /** Per-iteration snapshots of the winning restart. */
+  frames: KMeansFrame[];
   /** Final inertia of every restart, in the order they were run. Spread
    * across these is the visible argument for why n_init > 1 exists. */
   restarts: number[];
@@ -94,12 +105,16 @@ function lloyd(
   centroids: Float32Array,
   k: number,
   maxIter: number,
-): { labels: Int32Array; inertia: number; trace: KMeansStep[] } {
+): { labels: Int32Array; inertia: number; trace: KMeansStep[]; frames: KMeansFrame[] } {
   const { data, count, dims } = features;
   const labels = new Int32Array(count).fill(-1);
   const sums = new Float64Array(k * dims);
   const counts = new Int32Array(k);
   const trace: KMeansStep[] = [];
+  const frames: KMeansFrame[] = [];
+  // Labels fit a byte while k <= 255, which the UI (k <= 24) guarantees.
+  const snapshot = (inertia: number) =>
+    frames.push({ centroids: Float32Array.from(centroids), labels: Uint8Array.from(labels), inertia });
   let inertia = 0;
 
   for (let iter = 0; iter < maxIter; iter++) {
@@ -122,6 +137,7 @@ function lloyd(
         moved++;
       }
     }
+    snapshot(inertia);
     if (moved === 0 && iter > 0) {
       trace.push({ iter: iter + 1, inertia, moved: 0, shift: 0 });
       break;
@@ -148,13 +164,13 @@ function lloyd(
     }
     trace.push({ iter: iter + 1, inertia, moved, shift });
   }
-  return { labels, inertia, trace };
+  return { labels, inertia, trace, frames };
 }
 
 export function kmeans(
   features: Features,
   k: number,
-  { nInit = 10, maxIter = 100, seed = 42 } = {},
+  { nInit = 10, maxIter = 100, seed = 42, onRestart }: { nInit?: number; maxIter?: number; seed?: number; onRestart?: (done: number, total: number) => void } = {},
 ): KMeansModel {
   const kk = Math.max(1, Math.min(k, features.count));
   const rand = mulberry32(seed);
@@ -163,11 +179,12 @@ export function kmeans(
 
   for (let attempt = 0; attempt < nInit; attempt++) {
     const centroids = kmeansPlusPlus(features, kk, rand);
-    const { labels, inertia, trace } = lloyd(features, centroids, kk, maxIter);
+    const { labels, inertia, trace, frames } = lloyd(features, centroids, kk, maxIter);
     restarts.push(inertia);
     if (!best || inertia < best.inertia) {
-      best = { k: kk, dims: features.dims, centroids, labels, inertia, trace, restarts };
+      best = { k: kk, dims: features.dims, centroids, labels, inertia, trace, frames, restarts };
     }
+    onRestart?.(attempt + 1, nInit);
   }
   best!.restarts = restarts;
   return best!;
