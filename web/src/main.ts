@@ -1636,3 +1636,13 @@ async function boot() {
 }
 
 void boot();
+
+/* Optional offline support: production builds on a secure origin only, so the
+ * dev server never serves stale modules from a worker cache. */
+if (import.meta.env.PROD && 'serviceWorker' in navigator && window.isSecureContext) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      /* offline support is a bonus; failing to register changes nothing */
+    });
+  });
+}
