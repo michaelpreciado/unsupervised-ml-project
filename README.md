@@ -162,6 +162,58 @@ watermark is drawn by the animation itself rather than composited afterwards
 — the clip is signed by construction, from the same glyph geometry the
 Python side uses (`src/brand.py` ⇄ `web/src/lib/brand.ts`).
 
+### What the studio does beyond the port
+
+- **Explore (deep zoom).** Drag, wheel, pinch or use the keyboard to zoom
+  up to ~16x. Two levels of detail: far away the view is one blit of the
+  native mosaic; close up only the cells intersecting the viewport are drawn,
+  each straight from a 48-64 px sprite sheet kept next to the 16 px working
+  tiles, so zooming reveals real photo detail. **Dive** flies the camera to
+  the focal highlight and back.
+- **Before / after** scrubber between the target and the mosaic (arrow
+  keys work; it is an ARIA slider).
+- **Watch it converge.** The worker snapshots every Lloyd iteration; the page
+  replays them as assign (tiles tether to their nearest centre) and update
+  (centres glide to the mean), in the run's PCA plane, with seeding rings and
+  centre trails.
+- **Cluster explorer.** Select a cluster (click, Enter/Space) to light it up
+  in the feature-space plot, dim every cell it wasn't routed to in the mosaic
+  and the explorer, and read its share of the library and of the mosaic.
+  `Esc` clears.
+- **Hi-res export.** "High detail" recomposes the identical layout from the
+  sprite sheet (up to 64 px tiles, capped by canvas limits) rather than
+  upscaling the 16 px render. Encoded with `toBlob`, no data-URL round trip.
+- **Shareable presets.** Every control is mirrored into the URL hash
+  (`#k=8&tile=16&cols=48&variety=0.25&feature=mean_rgb&...`); "Copy link"
+  shares it, recipes (Balanced, Fine detail, Painterly, Texture match) are
+  one-click starting points. The pipeline is seeded, so a link reproduces the
+  same mosaic. Uploaded photos never leave the machine, so links use the
+  built-in target and library.
+- **Progress and cancel.** The worker reports stage progress (with per-restart
+  k-means ticks); Cancel replaces the worker, since a synchronous loop can't
+  be interrupted any other way. A crashed worker rejects the run instead of
+  spinning forever. Folder decoding runs four images at a time and closes each
+  bitmap immediately, so peak memory is four decoded photos, not the folder.
+- **Offline / installable.** Optional service worker (production, secure
+  origin only) caches the shell and the atlas; `manifest.webmanifest` makes it
+  installable. Nothing else changes if it isn't registered.
+
+Rendering notes. The fly-in bakes landed tiles into one layer and only draws
+tiles still in flight, which cut total paint time by roughly 40% on a
+6,144-cell mosaic in software-rendered Chromium (about 1.9 s -> 1.1 s per
+run; the mid-flight peak, where most tiles are in the air, is unchanged). The
+mosaic blit writes 32-bit pixels and the matcher's cell x candidate matrix is
+Float32. WebGL was not adopted: after the layering the cost is dominated by
+per-sprite transforms at the mid-flight peak, and a GPU path would add a
+second renderer to keep pixel-identical for recordings; the glyph rain already
+runs at 14 fps with a 1.5x DPR cap and stops when hidden.
+
+Accessibility. Stage views are a WAI-ARIA tablist (arrow keys move focus,
+Enter/Space activates), the mosaic is focusable with arrow-key cell
+inspection, clusters are toggle buttons, there is a skip link, and
+`prefers-reduced-motion` skips the fly-in, the replay autoplay, camera tweens
+and the rain.
+
 ```bash
 .venv/bin/python scripts/make_web_assets.py   # pack assets/sources into a sprite atlas
 npm --prefix web install
@@ -270,6 +322,10 @@ web/src/lib/    the TypeScript port, one module per stage
 web/src/lib/charts.ts      convergence, restarts, k sweep, feature space — hand-drawn canvas
 web/src/lib/projection.ts  PCA to 2-D by power iteration
 web/src/lib/record.ts      in-browser video capture
+web/src/lib/viewer.ts      deep-zoom explorer with tile LOD
+web/src/lib/replay.ts      k-means convergence replay
+web/src/lib/presets.ts     URL-hash presets and recipes
+web/src/lib/export.ts      hi-res PNG export
 scripts/        demo asset generation, web atlas packing, feature evaluation
 assets/         demo target + synthetic source library
 ```
