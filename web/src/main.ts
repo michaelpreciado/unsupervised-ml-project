@@ -22,6 +22,14 @@ import {
 import { drawConvergence, drawFeatureSpace, drawKScan, drawRestarts } from './lib/charts';
 import { cellMeans, gridTarget } from './lib/grid';
 import { attachInspector } from './lib/inspect';
+import { createViewer } from './lib/viewer';
+import type { Viewer } from './lib/viewer';
+import { createReplay } from './lib/replay';
+import type { Replay, ReplayState } from './lib/replay';
+import { RECIPES, decodePreset, encodePreset } from './lib/presets';
+import type { Preset } from './lib/presets';
+import { exportHiRes, exportNative, planExport } from './lib/export';
+import type { ExportPlan } from './lib/export';
 import { startRain } from './lib/matrix';
 import { canRecord, saveBlob, startRecording } from './lib/record';
 import { loadAtlas, loadDataUrls, loadFiles } from './lib/tiles';
@@ -44,7 +52,8 @@ const PRESETS = [
 const SCAN_FROM = 2;
 const SCAN_TO = 16;
 
-type StageView = 'animation' | 'target' | 'means' | 'clusters' | 'mosaic' | 'residual';
+type StageView = 'animation' | 'target' | 'means' | 'clusters' | 'mosaic' | 'compare' | 'residual';
+const VIEWS: StageView[] = ['animation', 'target', 'means', 'clusters', 'mosaic', 'compare', 'residual'];
 
 const VIEW_CAPTIONS: Record<StageView, string> = {
   animation:
@@ -54,7 +63,10 @@ const VIEW_CAPTIONS: Record<StageView, string> = {
     'Each cell collapsed to one average colour — 3 numbers per cell. This, not the photograph, is what the matcher is chasing.',
   clusters:
     "The target repainted in exactly k colours: every cell filled with the mean colour of the cluster it was routed to. This is the model's own resolution — everything finer has to be recovered by searching inside a cluster.",
-  mosaic: 'The finished mosaic at native tile resolution.',
+  mosaic:
+    'Drag to pan, scroll or pinch to zoom, double-click to dive. Zoom past the working tiles and each cell resolves into the full-detail photo the model chose for it.',
+  compare:
+    'Drag the divider — or focus it and use the arrow keys. Left of the line is the photograph you gave it; right of the line is what the model built from other photos.',
   residual:
     'Where the library ran out: brighter means the closest available tile was still far from the colour asked for. The variety penalty is excluded here, so this is coverage alone — bright regions are fixed by adding photos, not by turning knobs.',
 };
@@ -68,6 +80,9 @@ const $ = <T extends HTMLElement>(id: string): T => {
 const stageCanvas = $<HTMLCanvasElement>('stage-canvas');
 const previewCanvas = $<HTMLCanvasElement>('preview-canvas');
 const mosaicCanvas = $<HTMLCanvasElement>('mosaic-canvas');
+/** Untouched native mosaic. mosaicCanvas gets overlays (isolation, cursor), so
+ * everything that needs the pure picture reads this one instead. */
+const cleanMosaic = document.createElement('canvas');
 const spaceCanvas = $<HTMLCanvasElement>('space-canvas');
 const convergeCanvas = $<HTMLCanvasElement>('converge-canvas');
 const restartCanvas = $<HTMLCanvasElement>('restart-canvas');
@@ -89,6 +104,22 @@ const stageCaption = $('stage-caption');
 const scrub = $('scrub');
 const scrubFill = scrub.firstElementChild as HTMLElement;
 const recDot = $('rec-dot');
+const zoomCanvas = $<HTMLCanvasElement>('zoom-canvas');
+const viewerHud = $('viewer-hud');
+const viewerTools = $('viewer-tools');
+const compareHandle = $('compare-handle');
+const compareLeft = $('compare-left');
+const compareRight = $('compare-right');
+const stageFrame = $('stage-panel');
+const exportSelect = $<HTMLSelectElement>('export-size');
+const exportNote = $('export-note');
+const shareButton = $<HTMLButtonElement>('share');
+const clusterDetail = $('cluster-detail');
+const cellReadout = $('cell-readout');
+const replayCanvas = $<HTMLCanvasElement>('replay-canvas');
+const replayPlay = $<HTMLButtonElement>('replay-play');
+const replayScrub = $<HTMLInputElement>('replay-scrub');
+const replayReadout = $('replay-readout');
 
 let worker = spawnWorker();
 
@@ -119,6 +150,12 @@ interface State {
   highlight: number | null;
   scan: KScanPoint[] | null;
   scanKey: string;
+  selected: number | null;
+  hover: number | null;
+  comparePos: number;
+  cursor: { row: number; col: number } | null;
+  exportPlan: ExportPlan | null;
+  viewerFor: PipelineResult | null;
 }
 
 const state: State = {
@@ -139,6 +176,12 @@ const state: State = {
   highlight: null,
   scan: null,
   scanKey: '',
+  selected: null,
+  hover: null,
+  comparePos: 0.5,
+  cursor: null,
+  exportPlan: null,
+  viewerFor: null,
 };
 
 /* ----------------------------------------------------------------- chrome */
@@ -547,14 +590,24 @@ async function run() {
     );
     state.result = result;
     state.highlight = null;
+    state.selected = null;
+    state.hover = null;
+    state.cursor = null;
+    state.viewerFor = null;
+    document.body.classList.add('has-result');
 
     drawGridPreview(previewCanvas, result.cellMeans, rows, cols);
-    drawMosaic(mosaicCanvas, result.choice, tiles, rows, cols);
+    drawMosaic(cleanMosaic, result.choice, tiles, rows, cols);
+    paintMosaicPanel();
+    cellReadout.textContent = 'Arrow keys move between cells when the mosaic is focused.';
+    buildExportOptions();
+    syncHash();
     renderStats(result);
     renderConsole(result, params);
     renderClusters(result, tiles);
     renderBenchmark(result);
     renderInsights(result);
+    renderClusterDetail();
 
     overlay.classList.add('hidden');
     await showView(state.view, true);
@@ -591,10 +644,23 @@ function blitUpscaled(source: HTMLCanvasElement, tileSize: number) {
 
 async function showView(view: StageView, forceReplay = false) {
   state.view = view;
-  document
-    .querySelectorAll('#view-switch button')
-    .forEach((b) => b.classList.toggle('active', (b as HTMLElement).dataset.view === view));
+  document.querySelectorAll<HTMLElement>('#view-switch button').forEach((b) => {
+    const on = b.dataset.view === view;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', String(on));
+    b.tabIndex = on ? 0 : -1;
+  });
+  stageFrame.setAttribute('aria-labelledby', `tab-${view}`);
   stageCaption.textContent = VIEW_CAPTIONS[view];
+
+  const explore = view === 'mosaic';
+  const compare = view === 'compare';
+  zoomCanvas.hidden = !explore;
+  viewerHud.hidden = !explore;
+  viewerTools.hidden = !explore;
+  for (const el of [compareHandle, compareLeft, compareRight]) el.hidden = !compare;
+  stageCanvas.style.visibility = explore ? 'hidden' : '';
+  syncHash();
 
   const result = state.result;
   const tiles = state.tiles;
@@ -606,6 +672,7 @@ async function showView(view: StageView, forceReplay = false) {
     state.animation?.stop();
     scrub.classList.remove('on');
   }
+  if (!explore && viewer.isDiving()) viewer.reset(false);
 
   const scratch = document.createElement('canvas');
   switch (view) {
@@ -632,10 +699,157 @@ async function showView(view: StageView, forceReplay = false) {
       blitUpscaled(scratch, t);
       break;
     case 'mosaic':
-      drawMosaic(stageCanvas, result.choice, tiles, rows, cols);
+      ensureViewer(result, tiles);
+      break;
+    case 'compare':
+      drawCompare();
       break;
   }
 }
+
+/* ------------------------------------------------------- deep-zoom viewer */
+
+const viewer: Viewer = createViewer(zoomCanvas, viewerHud, {
+  reducedMotion: () => reducedMotion.matches,
+});
+
+function ensureViewer(result: PipelineResult, tiles: TileSet) {
+  if (state.viewerFor !== result) {
+    state.viewerFor = result;
+    viewer.setData({
+      mosaic: cleanMosaic,
+      choice: result.choice,
+      cellCluster: result.cellCluster,
+      cellMeans: result.cellMeans,
+      rows: result.stats.rows,
+      cols: result.stats.cols,
+      tileSize: tiles.size,
+      lod: state.lod,
+    });
+    viewer.setIsolate(state.selected);
+  } else {
+    viewer.resize();
+  }
+}
+
+$('zoom-in').addEventListener('click', () => viewer.zoomBy(1.6));
+$('zoom-out').addEventListener('click', () => viewer.zoomBy(1 / 1.6));
+$('zoom-fit').addEventListener('click', () => viewer.reset(true));
+const diveButton = $<HTMLButtonElement>('zoom-dive');
+diveButton.addEventListener('click', async () => {
+  if (viewer.isDiving()) return;
+  diveButton.disabled = true;
+  await viewer.dive();
+  diveButton.disabled = false;
+});
+
+/* --------------------------------------------------------- before / after */
+
+/** The stage canvas is letterboxed inside the frame (object-fit: contain),
+ * so the divider has to live inside the picture's box, not the frame's. */
+function pictureBox() {
+  const frame = stageFrame.getBoundingClientRect();
+  const ratio = stageCanvas.width / Math.max(1, stageCanvas.height);
+  let w = frame.width;
+  let h = w / ratio;
+  if (h > frame.height) {
+    h = frame.height;
+    w = h * ratio;
+  }
+  return { left: (frame.width - w) / 2, top: (frame.height - h) / 2, w, h };
+}
+
+function drawCompare() {
+  const result = state.result;
+  const tiles = state.tiles;
+  if (!result || !tiles || !state.target) return;
+  const { rows, cols } = result.stats;
+  const w = cols * tiles.size;
+  const h = rows * tiles.size;
+  if (stageCanvas.width !== w || stageCanvas.height !== h || state.view === 'compare') {
+    const ctx = fitStage(w, h);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(state.target, 0, 0, w, h);
+    const x = Math.round(w * state.comparePos);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, 0, w - x, h);
+    ctx.clip();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(cleanMosaic, 0, 0);
+    ctx.restore();
+    ctx.fillStyle = 'rgba(92, 225, 242, 0.95)';
+    ctx.fillRect(x - 1, 0, 2, h);
+  }
+  layoutCompare();
+}
+
+function layoutCompare() {
+  const box = pictureBox();
+  compareHandle.style.left = `${box.left + box.w * state.comparePos}px`;
+  compareHandle.style.top = `${box.top}px`;
+  compareHandle.style.height = `${box.h}px`;
+  compareLeft.style.left = `${box.left + 10}px`;
+  compareLeft.style.top = `${box.top + 10}px`;
+  compareRight.style.right = `${stageFrame.clientWidth - box.left - box.w + 10}px`;
+  compareRight.style.top = `${box.top + 10}px`;
+  const pct = Math.round(state.comparePos * 100);
+  compareHandle.setAttribute('aria-valuenow', String(pct));
+  compareHandle.setAttribute('aria-valuetext', `${pct}% target, ${100 - pct}% mosaic`);
+}
+
+function setComparePos(pos: number) {
+  state.comparePos = Math.min(1, Math.max(0, pos));
+  if (state.view === 'compare') drawCompare();
+}
+
+stageFrame.addEventListener('pointerdown', (event) => {
+  if (state.view !== 'compare' || (event.target as HTMLElement).closest('button')) return;
+  const move = (e: PointerEvent) => {
+    const box = pictureBox();
+    const rect = stageFrame.getBoundingClientRect();
+    setComparePos((e.clientX - rect.left - box.left) / box.w);
+  };
+  move(event);
+  compareHandle.focus({ preventScroll: true });
+  stageFrame.setPointerCapture(event.pointerId);
+  const up = () => {
+    stageFrame.removeEventListener('pointermove', move);
+    stageFrame.removeEventListener('pointerup', up);
+    stageFrame.removeEventListener('pointercancel', up);
+  };
+  stageFrame.addEventListener('pointermove', move);
+  stageFrame.addEventListener('pointerup', up);
+  stageFrame.addEventListener('pointercancel', up);
+});
+
+compareHandle.addEventListener('keydown', (event) => {
+  const step = event.shiftKey ? 0.1 : 0.02;
+  if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') setComparePos(state.comparePos - step);
+  else if (event.key === 'ArrowRight' || event.key === 'ArrowUp') setComparePos(state.comparePos + step);
+  else if (event.key === 'Home') setComparePos(0);
+  else if (event.key === 'End') setComparePos(1);
+  else return;
+  event.preventDefault();
+});
+
+$('view-switch').addEventListener('keydown', (event) => {
+  const tabs = Array.from($('view-switch').querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+  const i = tabs.indexOf(document.activeElement as HTMLButtonElement);
+  if (i < 0) return;
+  const next =
+    event.key === 'ArrowRight' ? (i + 1) % tabs.length
+    : event.key === 'ArrowLeft' ? (i - 1 + tabs.length) % tabs.length
+    : event.key === 'Home' ? 0
+    : event.key === 'End' ? tabs.length - 1
+    : -1;
+  if (next < 0) return;
+  event.preventDefault();
+  // Manual activation: arrows move focus, Enter/Space picks the view, so
+  // sweeping past "Animation" doesn't restart the fly-in.
+  tabs.forEach((t, n) => (t.tabIndex = n === next ? 0 : -1));
+  tabs[next].focus();
+});
 
 $('view-switch').addEventListener('click', (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-view]');
@@ -677,12 +891,49 @@ async function playAnimation(onFrame?: () => void, hold = 0) {
 
 replayButton.addEventListener('click', () => void showView('animation', true));
 
-downloadButton.addEventListener('click', () => {
-  const link = document.createElement('a');
-  link.download = `mosaic-${state.targetName.replace(/\.[^.]+$/, '')}.png`;
-  link.href = mosaicCanvas.toDataURL('image/png');
-  link.click();
+downloadButton.addEventListener('click', async () => {
+  const result = state.result;
+  const lod = state.lod;
+  const plan = state.exportPlan;
+  if (!result || !plan) return;
+  const name = `mosaic-${state.targetName.replace(/\.[^.]+$/, '')}`;
+  downloadButton.disabled = true;
+  exportSelect.disabled = true;
+  try {
+    let blob: Blob;
+    if (exportSelect.value === 'hires' && plan.hires && lod) {
+      blob = await exportHiRes(result.choice, result.stats.rows, result.stats.cols, plan, lod, (f) => {
+        exportNote.textContent = `Composing high-detail PNG… ${Math.round(f * 100)}%`;
+      });
+      saveBlob(blob, `${name}-${plan.width}x${plan.height}.png`);
+      exportNote.textContent = `Saved ${plan.width} × ${plan.height} px (${(blob.size / 1e6).toFixed(1)} MB) — composed from full-detail tiles, not upscaled.`;
+    } else {
+      blob = await exportNative(cleanMosaic);
+      saveBlob(blob, `${name}.png`);
+      exportNote.textContent = `Saved ${cleanMosaic.width} × ${cleanMosaic.height} px (${(blob.size / 1e6).toFixed(1)} MB).`;
+    }
+  } catch (error) {
+    showError(error instanceof Error ? error.message : String(error));
+    exportNote.textContent = '';
+  } finally {
+    downloadButton.disabled = !state.result;
+    exportSelect.disabled = !state.result;
+  }
 });
+
+function buildExportOptions() {
+  const result = state.result;
+  const tiles = state.tiles;
+  if (!result || !tiles) return;
+  const { rows, cols } = result.stats;
+  const plan = planExport(rows, cols, tiles.size, state.lod);
+  state.exportPlan = plan;
+  const opts = [`<option value="native">Native · ${cols * tiles.size}×${rows * tiles.size}</option>`];
+  if (plan.hires) opts.push(`<option value="hires">High detail · ${plan.width}×${plan.height}</option>`);
+  exportSelect.innerHTML = opts.join('');
+  exportSelect.value = plan.hires ? 'hires' : 'native';
+  exportSelect.disabled = state.busy;
+}
 
 /* --------------------------------------------------------------- recording */
 
@@ -898,12 +1149,52 @@ function fmt(value: number): string {
 
 /* The diagnostic panels ------------------------------------------------ */
 
+let replayFor: PipelineResult | null = null;
+let replayAuto: PipelineResult | null = null;
+
+const replay: Replay = createReplay(replayCanvas, {
+  reducedMotion: () => reducedMotion.matches,
+  onChange: (st: ReplayState) => {
+    const live = st.frames >= 2;
+    replayScrub.disabled = !live;
+    replayPlay.disabled = !live;
+    replayScrub.max = String(Math.max(0, st.frames - 1));
+    replayScrub.value = String(st.t);
+    replayPlay.textContent = st.playing ? 'Pause' : st.t >= st.frames - 1 ? 'Replay' : 'Play';
+    replayReadout.textContent = st.frames
+      ? `iteration ${st.iteration} / ${st.frames} · inertia ${fmt(st.inertia)}${st.moved ? ` · ${st.moved} moved` : st.t >= st.frames - 1 ? ' · converged' : ''}`
+      : '—';
+    replayScrub.setAttribute('aria-valuetext', replayReadout.textContent ?? '');
+  },
+});
+replayPlay.addEventListener('click', () => replay.toggle());
+replayScrub.addEventListener('input', () => replay.seek(Number(replayScrub.value)));
+
+// Play once, the first time the panel is actually in view for each run.
+if ('IntersectionObserver' in window) {
+  new IntersectionObserver(
+    (entries) => {
+      if (!entries.some((e) => e.isIntersecting) || !state.result) return;
+      if (replayAuto === state.result || reducedMotion.matches) return;
+      replayAuto = state.result;
+      replay.seek(0);
+      replay.play();
+    },
+    { threshold: 0.5 },
+  ).observe($('replay-panel'));
+}
+
 function renderInsights(result: PipelineResult) {
   const s = result.stats;
 
   drawFeatureSpace(spaceCanvas, result.scatter, result.labels, result.tileColors, s.k, {
     highlight: state.highlight,
   });
+  if (replayFor === result) replay.resize();
+  else {
+    replayFor = result;
+    replay.setData(result.scatter, result.tileColors, s.trace, s.k);
+  }
   const captured = ((result.scatter.explained[0] + result.scatter.explained[1]) * 100).toFixed(1);
   $('space-note').innerHTML =
     `${s.featureDims} dimensions flattened to 2. These axes carry <b>${captured}%</b> of the total variance` +
@@ -976,23 +1267,46 @@ function renderClusters(result: PipelineResult, tiles: TileSet) {
     if (!members) continue;
     const figure = document.createElement('figure');
     figure.className = 'cluster';
+    figure.dataset.cluster = String(c);
+    figure.tabIndex = 0;
+    figure.setAttribute('role', 'button');
+    figure.setAttribute('aria-pressed', 'false');
+    figure.setAttribute(
+      'aria-label',
+      `Cluster ${c}, ${result.stats.clusterSizes[c]} tiles. Press to follow it through the mosaic.`,
+    );
     canvas.className = 'pixelated';
+    canvas.setAttribute('aria-hidden', 'true');
     const caption = document.createElement('figcaption');
     caption.innerHTML = `cluster ${String(c).padStart(2, '0')} <span>${
       result.stats.clusterSizes[c]
     } tiles</span>`;
     figure.append(canvas, caption);
 
-    // Hovering a contact sheet isolates that cluster in the feature-space
-    // plot — the link between "these photos" and "this region of ℝⁿ".
-    figure.addEventListener('pointerenter', () => setHighlight(c));
-    figure.addEventListener('pointerleave', () => setHighlight(null));
+    // Hover previews a cluster in the feature-space plot; selecting keeps it
+    // there and follows it through the mosaic too.
+    figure.addEventListener('pointerenter', () => setHover(c));
+    figure.addEventListener('pointerleave', () => setHover(null));
+    figure.addEventListener('click', () => selectCluster(state.selected === c ? null : c));
+    figure.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        selectCluster(state.selected === c ? null : c);
+      }
+    });
     container.appendChild(figure);
   }
 }
 
-function setHighlight(cluster: number | null) {
-  if (state.highlight === cluster || !state.result) return;
+function setHover(cluster: number | null) {
+  state.hover = cluster;
+  redrawSpace();
+}
+
+function redrawSpace() {
+  if (!state.result) return;
+  const cluster = state.hover ?? state.selected;
+  if (state.highlight === cluster) return;
   state.highlight = cluster;
   drawFeatureSpace(
     spaceCanvas,
@@ -1003,6 +1317,119 @@ function setHighlight(cluster: number | null) {
     { highlight: cluster },
   );
 }
+
+function selectCluster(cluster: number | null) {
+  state.selected = cluster;
+  document.querySelectorAll<HTMLElement>('#clusters .cluster').forEach((el) => {
+    const on = Number(el.dataset.cluster) === cluster;
+    el.classList.toggle('selected', on);
+    el.setAttribute('aria-pressed', String(on));
+  });
+  redrawSpace();
+  paintMosaicPanel();
+  viewer.setIsolate(cluster);
+  renderClusterDetail();
+}
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && state.selected !== null) selectCluster(null);
+});
+
+function renderClusterDetail() {
+  const result = state.result;
+  const c = state.selected;
+  if (!result) {
+    clusterDetail.innerHTML = '<p class="empty">Generate a mosaic to explore its clusters.</p>';
+    return;
+  }
+  if (c === null) {
+    clusterDetail.innerHTML =
+      '<p class="empty">Select a cluster to see where its tiles landed in the mosaic.</p>';
+    return;
+  }
+  const s = result.stats;
+  let routed = 0;
+  const used = new Set<number>();
+  for (let i = 0; i < result.cellCluster.length; i++) {
+    if (result.cellCluster[i] !== c) continue;
+    routed++;
+    used.add(result.choice[i]);
+  }
+  const size = s.clusterSizes[c];
+  const idle = routed === 0 ? '<p class="empty-note">None of this target\'s cells fell into this cluster — try another.</p>' : '';
+  const rgb = `rgb(${result.clusterColors[c * 3]}, ${result.clusterColors[c * 3 + 1]}, ${result.clusterColors[c * 3 + 2]})`;
+  clusterDetail.innerHTML = `
+    <span class="swatch" style="background:${rgb}" aria-hidden="true"></span>
+    <dl>
+      <div><dt>cluster</dt><dd>${String(c).padStart(2, '0')}</dd></div>
+      <div><dt>library share</dt><dd>${size} tiles · ${((size / Math.max(1, s.tiles)) * 100).toFixed(0)}%</dd></div>
+      <div><dt>cells routed here</dt><dd>${routed.toLocaleString()} · ${((routed / Math.max(1, s.cells)) * 100).toFixed(0)}% of the mosaic</dd></div>
+      <div><dt>tiles actually used</dt><dd>${used.size} of ${size}</dd></div>
+    </dl>
+    ${idle}
+    <button type="button" class="btn btn-ghost" id="cluster-clear">Clear <kbd>Esc</kbd></button>`;
+  $('cluster-clear').addEventListener('click', () => selectCluster(null));
+}
+
+/** The mosaic panel: the picture, plus whichever overlays are live —
+ * cluster isolation and the keyboard cell cursor. */
+function paintMosaicPanel() {
+  const result = state.result;
+  const tiles = state.tiles;
+  if (!result || !tiles) return;
+  const { rows, cols } = result.stats;
+  const t = tiles.size;
+  mosaicCanvas.width = cleanMosaic.width;
+  mosaicCanvas.height = cleanMosaic.height;
+  const ctx = mosaicCanvas.getContext('2d')!;
+  ctx.drawImage(cleanMosaic, 0, 0);
+  if (state.selected !== null) {
+    ctx.fillStyle = 'rgba(4, 6, 10, 0.8)';
+    for (let i = 0; i < rows * cols; i++) {
+      if (result.cellCluster[i] === state.selected) continue;
+      ctx.fillRect((i % cols) * t, Math.floor(i / cols) * t, t, t);
+    }
+  }
+  if (state.cursor) {
+    ctx.strokeStyle = 'rgba(92, 225, 242, 1)';
+    ctx.lineWidth = Math.max(1.5, t / 8);
+    ctx.strokeRect(state.cursor.col * t + ctx.lineWidth / 2, state.cursor.row * t + ctx.lineWidth / 2, t - ctx.lineWidth, t - ctx.lineWidth);
+  }
+}
+
+/** Keyboard route to the same per-cell decision the hover tooltip shows. */
+mosaicCanvas.addEventListener('keydown', (event) => {
+  const result = state.result;
+  if (!result) return;
+  const { rows, cols } = result.stats;
+  const cur = state.cursor ?? { row: Math.floor(rows / 2), col: Math.floor(cols / 2) };
+  const step = event.shiftKey ? 5 : 1;
+  if (event.key === 'ArrowLeft') cur.col = Math.max(0, cur.col - step);
+  else if (event.key === 'ArrowRight') cur.col = Math.min(cols - 1, cur.col + step);
+  else if (event.key === 'ArrowUp') cur.row = Math.max(0, cur.row - step);
+  else if (event.key === 'ArrowDown') cur.row = Math.min(rows - 1, cur.row + step);
+  else if (event.key === 'Escape') {
+    state.cursor = null;
+    paintMosaicPanel();
+    return;
+  } else return;
+  event.preventDefault();
+  state.cursor = { ...cur };
+  paintMosaicPanel();
+  const i = cur.row * cols + cur.col;
+  const cluster = Math.max(0, result.cellCluster[i]);
+  cellReadout.textContent =
+    `Cell r${cur.row} · c${cur.col} asked for rgb(${result.cellMeans[i * 3]}, ${result.cellMeans[i * 3 + 1]}, ${result.cellMeans[i * 3 + 2]}). ` +
+    `Routed to cluster ${String(cluster).padStart(2, '0')}, searched ${result.cellCandidates[i]} of ${result.stats.tiles} tiles, ` +
+    `got tile #${result.choice[i]} at distance ${result.cellDist[i].toFixed(1)}` +
+    (result.cellDist[i] > result.cellNearest[i] + 1e-6 ? ` (best available ${result.cellNearest[i].toFixed(1)}, already taken).` : '.');
+});
+mosaicCanvas.addEventListener('blur', () => {
+  if (state.cursor) {
+    state.cursor = null;
+    paintMosaicPanel();
+  }
+});
 
 function renderBenchmark(result: PipelineResult) {
   const s = result.stats;
@@ -1061,6 +1488,7 @@ function setBusy(busy: boolean) {
   runButton.textContent = busy && !state.recording ? 'Working…' : 'Generate mosaic';
   replayButton.disabled = blocked || !state.result;
   downloadButton.disabled = blocked || !state.result;
+  exportSelect.disabled = blocked || !state.result;
   recordButton.disabled = blocked || !state.result;
   scanButton.disabled = blocked || !state.tiles;
 }
@@ -1080,6 +1508,8 @@ window.addEventListener('resize', () => {
   window.clearTimeout(resizeTimer);
   resizeTimer = window.setTimeout(() => {
     if (state.result) renderInsights(state.result);
+    if (state.view === 'mosaic') viewer.resize();
+    if (state.view === 'compare') layoutCompare();
   }, 180);
 });
 
@@ -1103,12 +1533,101 @@ attachInspector(mosaicCanvas, $('inspector'), () => {
   };
 });
 
+/* ---------------------------------------------------- presets and sharing */
+
+function currentPreset(): Preset {
+  const p = readParams();
+  return {
+    k: p.k,
+    tile: p.tileSize,
+    cols: p.gridCols,
+    variety: p.variety,
+    feature: p.feature,
+    compare: p.compare,
+    target: PRESETS.some((x) => x.id === state.targetName) ? state.targetName : 'sunset',
+    view: state.view,
+  };
+}
+
+/** Keep the address bar equal to the current settings, so the URL is always
+ * a valid share link and a reload restores the run. */
+function syncHash() {
+  try {
+    history.replaceState(null, '', `#${encodePreset(currentPreset())}`);
+  } catch {
+    /* sandboxed frames can refuse history writes; sharing still works via the button */
+  }
+}
+
+function applyPreset(p: Partial<Preset>) {
+  const set = (id: string, value: number | undefined) => {
+    if (value === undefined) return;
+    const input = $<HTMLInputElement>(id);
+    input.value = String(value);
+    input.dispatchEvent(new Event('input'));
+  };
+  set('in-k', p.k);
+  set('in-tile', p.tile);
+  set('in-cols', p.cols);
+  set('in-variety', p.variety);
+  if (p.feature) {
+    state.feature = p.feature;
+    $('feature-toggle')
+      .querySelectorAll<HTMLElement>('button')
+      .forEach((b) => b.classList.toggle('active', b.dataset.feature === p.feature));
+  }
+  if (p.compare !== undefined) $<HTMLInputElement>('in-compare').checked = p.compare;
+}
+
+function buildRecipes() {
+  const row = $('recipes');
+  RECIPES.forEach((recipe) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'chip';
+    button.textContent = recipe.label;
+    button.title = recipe.hint;
+    button.addEventListener('click', () => {
+      if (state.busy) return;
+      applyPreset(recipe.set);
+      void run();
+    });
+    row.appendChild(button);
+  });
+}
+
+shareButton.addEventListener('click', async () => {
+  syncHash();
+  const custom =
+    !PRESETS.some((x) => x.id === state.targetName) || state.userFiles || state.googleUrls;
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(location.href);
+    copied = true;
+  } catch {
+    /* clipboard needs a secure context and a user gesture; fall through */
+  }
+  exportNote.textContent =
+    (copied ? 'Link copied.' : 'Copy the address bar — it already holds your settings.') +
+    (custom ? ' Uploaded photos stay on your machine, so the link opens with a built-in target and library.' : '');
+});
+
 /* -------------------------------------------------------------------- boot */
+
+
 
 async function boot() {
   buildPresetButtons();
+  buildRecipes();
+  const shared = decodePreset(
+    location.hash,
+    PRESETS.map((p) => p.id),
+    VIEWS,
+  );
+  applyPreset(shared);
+  if (shared.view) state.view = shared.view as StageView;
   try {
-    await setTargetFromPreset('sunset');
+    await setTargetFromPreset(shared.target ?? 'sunset');
     await run();
   } catch (error) {
     showError(error instanceof Error ? error.message : String(error));

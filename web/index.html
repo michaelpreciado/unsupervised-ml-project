@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Preciado Mosaic — unsupervised learning you can watch</title>
     <meta
       name="description"
@@ -15,9 +15,28 @@
       content="Unsupervised learning, visibly at work: k-means clusters a photo library, then the tiles fly into place to rebuild your image."
     />
     <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Preciado Tech" />
+    <meta property="og:image" content="/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="A photo mosaic of a sunset assembling itself from hundreds of tiles, over the Preciado Mosaic title." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Preciado Mosaic — unsupervised learning you can watch" />
+    <meta name="twitter:description" content="k-means clusters a photo library in your browser, then the tiles fly into place. Deep-zoom it, replay the fit, export it." />
+    <meta name="twitter:image" content="/og.png" />
+    <meta name="theme-color" content="#04060a" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
   </head>
   <body>
+    <a class="skip-link" href="#studio">Skip to the studio</a>
+    <noscript>
+      <p class="noscript">
+        Preciado Mosaic runs its clustering in your browser, so it needs
+        JavaScript. Nothing is sent anywhere — enable scripts and reload.
+      </p>
+    </noscript>
     <canvas id="rain" class="rain" aria-hidden="true"></canvas>
     <div class="atmosphere" aria-hidden="true"></div>
 
@@ -62,19 +81,40 @@
         <div class="stage">
           <div class="stage-head">
             <div class="view-switch" id="view-switch" role="tablist" aria-label="Stage view">
-              <button type="button" data-view="animation" class="active" role="tab">
+              <button type="button" data-view="animation" class="active" role="tab" id="tab-animation" aria-selected="true" aria-controls="stage-panel">
                 Animation
               </button>
-              <button type="button" data-view="target" role="tab">Target</button>
-              <button type="button" data-view="means" role="tab">Cell means</button>
-              <button type="button" data-view="clusters" role="tab">Cluster map</button>
-              <button type="button" data-view="mosaic" role="tab">Mosaic</button>
-              <button type="button" data-view="residual" role="tab">Error</button>
+              <button type="button" data-view="target" role="tab" id="tab-target" aria-selected="false" aria-controls="stage-panel" tabindex="-1">Target</button>
+              <button type="button" data-view="means" role="tab" id="tab-means" aria-selected="false" aria-controls="stage-panel" tabindex="-1">Cell means</button>
+              <button type="button" data-view="clusters" role="tab" id="tab-clusters" aria-selected="false" aria-controls="stage-panel" tabindex="-1">Cluster map</button>
+              <button type="button" data-view="mosaic" role="tab" id="tab-mosaic" aria-selected="false" aria-controls="stage-panel" tabindex="-1">Explore</button>
+              <button type="button" data-view="compare" role="tab" id="tab-compare" aria-selected="false" aria-controls="stage-panel" tabindex="-1">Before / after</button>
+              <button type="button" data-view="residual" role="tab" id="tab-residual" aria-selected="false" aria-controls="stage-panel" tabindex="-1">Error</button>
             </div>
           </div>
 
-          <figure class="canvas-frame">
+          <figure class="canvas-frame" id="stage-panel" role="tabpanel" aria-labelledby="tab-animation">
             <canvas id="stage-canvas" aria-label="Mosaic animation"></canvas>
+            <canvas
+              id="zoom-canvas"
+              class="zoom"
+              tabindex="0"
+              hidden
+              role="application"
+              aria-label="Interactive mosaic. Arrow keys pan, plus and minus zoom, zero resets the view."
+            ></canvas>
+            <div class="compare-handle" id="compare-handle" role="slider" tabindex="0" hidden
+              aria-label="Before and after divider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"
+              aria-valuetext="Half the target, half the mosaic"><i></i></div>
+            <span class="compare-tag left" id="compare-left" hidden aria-hidden="true">target</span>
+            <span class="compare-tag right" id="compare-right" hidden aria-hidden="true">mosaic</span>
+            <div class="viewer-hud" id="viewer-hud" hidden></div>
+            <div class="viewer-tools" id="viewer-tools" hidden role="toolbar" aria-label="Zoom controls">
+              <button type="button" id="zoom-in" class="tool" aria-label="Zoom in">+</button>
+              <button type="button" id="zoom-out" class="tool" aria-label="Zoom out">&minus;</button>
+              <button type="button" id="zoom-fit" class="tool" aria-label="Fit to frame">fit</button>
+              <button type="button" id="zoom-dive" class="tool wide">Dive</button>
+            </div>
             <span class="corner tl" aria-hidden="true"></span>
             <span class="corner tr" aria-hidden="true"></span>
             <span class="corner bl" aria-hidden="true"></span>
@@ -102,11 +142,17 @@
               <button id="download" class="btn btn-ghost" type="button" disabled>
                 Save PNG
               </button>
+              <label class="select-wrap" for="export-size">
+                <span class="sr-only">PNG resolution</span>
+                <select id="export-size" disabled aria-label="PNG resolution"></select>
+              </label>
+              <button id="share" class="btn btn-ghost" type="button">Copy link</button>
               <button id="record" class="btn btn-ghost" type="button" disabled>
                 Save video
               </button>
             </div>
           </div>
+          <p class="export-note" id="export-note" role="status"></p>
           <p class="record-note" id="record-note">
             The video is encoded in this tab and saved straight to your
             downloads, watermarked in the corner. Nothing is uploaded.
@@ -174,6 +220,8 @@
 
           <div class="control-group">
             <h2>Parameters</h2>
+            <p class="hint">Start from a recipe, then bend it. Your settings live in the link — copy it to share the exact run.</p>
+            <div class="preset-row" id="recipes" role="group" aria-label="Recipes"></div>
 
             <label class="slider">
               <span class="slider-label"
@@ -294,6 +342,26 @@
             <p class="insight-note" id="space-note"></p>
           </article>
 
+          <article class="panel insight span-2" id="replay-panel">
+            <header class="insight-head">
+              <h3>Watch it converge</h3>
+              <p>
+                Every library tile is a dot at its true colour, flattened to
+                the plane that shows the most variance. Hollow rings are where
+                k-means++ first dropped the centres; crosses are where they
+                are now. Each pass, tiles tether to their nearest centre, then
+                the centres glide to the middle of their tethers — until they
+                stop moving.
+              </p>
+            </header>
+            <canvas id="replay-canvas" class="space" aria-label="Animated replay of the k-means fit"></canvas>
+            <div class="replay-bar">
+              <button id="replay-play" class="btn btn-ghost" type="button" disabled>Play</button>
+              <input id="replay-scrub" type="range" min="0" max="0" step="0.01" value="0" disabled aria-label="k-means iteration" />
+              <output id="replay-readout" class="replay-readout" aria-live="off">—</output>
+            </div>
+          </article>
+
           <article class="panel insight">
             <header class="insight-head">
               <h3>Convergence</h3>
@@ -366,6 +434,7 @@
             is actually chasing.
           </p>
           <canvas id="preview-canvas" class="pixelated"></canvas>
+          <p class="empty" data-empty>Generate a mosaic to see the grid.</p>
         </article>
         <article class="panel">
           <h3 class="panel-title">02 · The mosaic</h3>
@@ -374,9 +443,11 @@
             <strong>Hover any cell</strong> to see the decision behind it.
           </p>
           <div class="inspect-wrap">
-            <canvas id="mosaic-canvas"></canvas>
+            <canvas id="mosaic-canvas" tabindex="0" role="img" aria-label="The finished mosaic. Focus and use the arrow keys to inspect individual cells."></canvas>
             <div class="inspector" id="inspector" hidden></div>
           </div>
+          <p class="empty" data-empty>Generate a mosaic to inspect its cells.</p>
+          <p class="insight-note" id="cell-readout" role="status" aria-live="polite">Arrow keys move between cells when the mosaic is focused.</p>
         </article>
       </section>
 
@@ -388,8 +459,11 @@
             One contact sheet per cluster, straight from the model. Nothing here
             was labelled — the grouping falls out of the pixel data alone.
             Clusters that look coherent are why the search shortcut is safe.
-            Hover one to isolate it in the feature-space plot above.
+            Select one to follow it: its tiles light up in the feature-space plot, and the mosaic dims everywhere it wasn't used.
           </p>
+        </div>
+        <div class="cluster-detail panel" id="cluster-detail" aria-live="polite">
+          <p class="empty">Select a cluster to see where its tiles landed.</p>
         </div>
         <div id="clusters" class="clusters"></div>
       </section>
