@@ -2029,10 +2029,6 @@ kbd {
   .btn {
     min-height: 40px;
   }
-
-  input[type="range"] {
-    min-height: 32px;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2050,3 +2046,76 @@ kbd {
   box-shadow: 0 0 0 3px rgba(92, 225, 242, 0.45), 0 0 18px rgba(92, 225, 242, 0.55);
 }
 .empty-note{margin:0;font-size:.78rem;color:var(--text-faint);flex-basis:100%}
+
+.stage-buttons .btn {
+  white-space: nowrap;
+}
+
+@media (max-width: 620px) {
+  .viewer-hud {
+    bottom: auto;
+    top: 10px;
+    left: 30px;
+    max-width: calc(100% - 60px);
+  }
+}
+
+/* Long log lines and the benchmark table wrap or stack on a phone instead of
+ * hiding behind a sideways scroll nobody knows is there. */
+@media (max-width: 620px) {
+  .console {
+    padding: 0.9rem;
+  }
+
+  .console .row {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .benchmark {
+    padding: 1rem;
+  }
+
+  .benchmark table {
+    min-width: 0;
+  }
+
+  .benchmark thead {
+    display: none;
+  }
+
+  .benchmark tbody tr {
+    display: block;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .benchmark tbody tr:last-child {
+    border-bottom: 0;
+  }
+
+  .benchmark tbody th,
+  .benchmark tbody td {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    border: 0;
+    padding: 0.2rem 0;
+    white-space: normal;
+    text-align: right;
+  }
+
+  .benchmark tbody th {
+    text-align: left;
+    padding-bottom: 0.35rem;
+  }
+
+  .benchmark tbody td::before {
+    content: attr(data-label);
+    color: var(--text-faint);
+    text-align: left;
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+}

@@ -490,16 +490,27 @@ async function ensureTiles(tileSize: number): Promise<TileSet> {
   if (state.tiles && state.tilesSize === tileSize) return state.tiles;
 
   let lib: Library & { skipped?: number };
-  if (state.userFiles) {
-    lib = await loadFiles(state.userFiles, tileSize, 1200, (done, total) =>
-      setStatus(`Reading your photos… ${done}/${total}`, done / total),
-    );
-  } else if (state.googleUrls) {
-    lib = await loadDataUrls(state.googleUrls, tileSize, (done, total) =>
-      setStatus(`Mapping Google tiles… ${done}/${total}`, done / total),
-    );
-  } else {
+  try {
+    if (state.userFiles) {
+      lib = await loadFiles(state.userFiles, tileSize, 1200, (done, total) =>
+        setStatus(`Reading your photos… ${done}/${total}`, done / total),
+      );
+    } else if (state.googleUrls) {
+      lib = await loadDataUrls(state.googleUrls, tileSize, (done, total) =>
+        setStatus(`Mapping Google tiles… ${done}/${total}`, done / total),
+      );
+    } else {
+      lib = await loadAtlas(tileSize);
+    }
+  } catch (error) {
+    // A bad folder must not strand the page: fall back to the bundled
+    // library and say why, rather than leave every later run failing.
+    if (!state.userFiles && !state.googleUrls) throw error;
+    const why = error instanceof Error ? error.message : String(error);
+    clearUserSource();
+    resetLibraryButton.hidden = true;
     lib = await loadAtlas(tileSize);
+    showError(`${why} Back on the bundled demo library.`);
   }
   const tiles = lib.tiles;
   setLibrary(lib);
@@ -564,8 +575,19 @@ function ask<T>(
 
 /* ------------------------------------------------------------------ running */
 
+let rerunQueued = false;
+
 async function run() {
-  if (state.busy || !state.target) return;
+  if (!state.target) return;
+  if (state.busy) {
+    // A change made mid-run (a new folder, a preset) is remembered rather
+    // than dropped; cutting the fly-in short lets it start straight away.
+    if (!state.recording) {
+      rerunQueued = true;
+      state.animation?.stop();
+    }
+    return;
+  }
   state.busy = true;
   setBusy(true);
   hideError();
@@ -619,6 +641,10 @@ async function run() {
   } finally {
     state.busy = false;
     setBusy(false);
+    if (rerunQueued) {
+      rerunQueued = false;
+      void run();
+    }
   }
 }
 
@@ -1455,7 +1481,9 @@ function renderBenchmark(result: PipelineResult) {
           .map(
             (r) =>
               `<tr>${r
-                .map((cell, i) => (i ? `<td>${cell}</td>` : `<th scope="row">${cell}</th>`))
+                .map((cell, i) =>
+                  i ? `<td data-label="${rows[0][i]}">${cell}</td>` : `<th scope="row">${cell}</th>`,
+                )
                 .join('')}</tr>`,
           )
           .join('')}

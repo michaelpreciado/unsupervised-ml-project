@@ -97,6 +97,13 @@ guides rather than writes.
     artifact: `--record` (headless, fixed timestep, watermarked) and an
     in-browser MediaRecorder capture of the same animation
 
+13. Studio pass (web): deep-zoom explorer with a tile level of detail,
+    before/after scrubber, live k-means convergence replay, cluster
+    explorer, hi-res export, URL-hash presets, worker progress/cancel,
+    bounded-concurrency decode, mobile layout, keyboard/reduced-motion
+    support, OG/PWA metadata. Design notes are in the README's "browser
+    demo" section.
+
 ## Differentiation from existing similar projects
 
 Most existing photomosaic generators (including genetic-algorithm and
