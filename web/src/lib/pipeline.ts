@@ -13,7 +13,9 @@ import { extract } from './features';
 import { kmeans, silhouette } from './kmeans';
 import { matchBrute, matchClustered } from './matching';
 import { pca2, project } from './projection';
-import type { KScanPoint, PipelineParams, PipelineResult, Scatter, TileSet } from './types';
+import type { KScanPoint, PipelineParams, PipelineResult, Scatter, Stage, TileSet } from './types';
+
+export type Report = (stage: Stage, fraction: number, label: string) => void;
 
 /** Cap on cells drawn in the feature-space plot. Past a few thousand points
  * the scatter is a solid mass and the extra transfer is wasted. */
@@ -36,16 +38,23 @@ export function runPipeline(
   cols: number,
   tiles: TileSet,
   params: PipelineParams,
+  report: Report = () => {},
 ): PipelineResult {
+  report('features', 0.02, 'Extracting features…');
   const t0 = performance.now();
   const tileFeats = extract(tiles, params.feature);
   const cellFeats = extract(cells, params.feature);
   const msFeatures = performance.now() - t0;
 
   const t1 = performance.now();
-  const model = kmeans(tileFeats, params.k);
+  report('kmeans', 0.1, 'Fitting k-means…');
+  const model = kmeans(tileFeats, params.k, {
+    onRestart: (done, total) =>
+      report('kmeans', 0.1 + 0.4 * (done / total), `k-means restart ${done} of ${total}`),
+  });
   const msKmeans = performance.now() - t1;
 
+  report('matching', 0.55, `Routing ${cells.count.toLocaleString()} cells…`);
   const t2 = performance.now();
   const clustered = matchClustered(cellFeats, tileFeats, model, params.variety);
   const msCluster = performance.now() - t2;
@@ -53,6 +62,7 @@ export function runPipeline(
   let msBrute: number | null = null;
   let distBrute = cellFeats.count * tileFeats.count;
   if (params.compare) {
+    report('brute', 0.72, 'Brute-force benchmark…');
     const t3 = performance.now();
     const brute = matchBrute(cellFeats, tileFeats, params.variety);
     msBrute = performance.now() - t3;
@@ -80,6 +90,7 @@ export function runPipeline(
     for (let ch = 0; ch < 3; ch++) clusterColors[c * 3 + ch] = Math.round(acc[c * 3 + ch] / n);
   }
 
+  report('projection', 0.9, 'Projecting the feature space…');
   const t4 = performance.now();
   const basis = pca2(tileFeats);
   const cellStride = Math.max(1, Math.ceil(cellFeats.count / MAX_SCATTER_CELLS));
@@ -98,6 +109,11 @@ export function runPipeline(
     centroids: project(model.centroids, model.k, basis),
     cells: project(thinned, sampled.length, basis),
     cellStride,
+    frames: model.frames.map((f) => ({
+      centroids: project(f.centroids, model.k, basis),
+      labels: f.labels,
+      inertia: f.inertia,
+    })),
     explained: basis.explained,
   };
   const msProjection = performance.now() - t4;

@@ -38,6 +38,10 @@ export interface AnimationHandle {
 
 const BACKDROP = '#05070b';
 
+/** Seconds of cinematic reveal after the last tile lands: a cyan light band
+ * sweeps the finished mosaic and a faint bloom cools away behind it. */
+const REVEAL = 1.0;
+
 function easeOutCubic(t: number): number {
   return 1 - (1 - t) ** 3;
 }
@@ -135,7 +139,7 @@ export function animate(
   let frame = 0;
   let stopped = false;
   const flight = stagger + duration;
-  const total = flight + hold;
+  const total = flight + REVEAL + hold;
   let resolve!: () => void;
   const done = new Promise<void>((res) => {
     resolve = res;
@@ -161,14 +165,57 @@ export function animate(
     ctx.restore();
   }
 
+  /** A soft diagonal band of additive cyan travelling corner to corner. */
+  function drawReveal(t: number) {
+    const f = Math.min(1, t / (REVEAL + 0.15));
+    const e = 1 - (1 - f) ** 2.2;
+    const reach = w + h;
+    const pos = -0.25 * reach + e * 1.5 * reach;
+    const half = reach * 0.11;
+    const g = ctx.createLinearGradient((pos - half) / 2, (pos - half) / 2, (pos + half) / 2, (pos + half) / 2);
+    // Iso-lines of x+y are the band's edges; it peaks in the middle.
+    g.addColorStop(0, 'rgba(92, 225, 242, 0)');
+    g.addColorStop(0.5, 'rgba(160, 246, 255, 0.5)');
+    g.addColorStop(1, 'rgba(92, 225, 242, 0)');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 1 - f * 0.6;
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+  }
+
+  // Landed tiles are baked once into a layer and blitted as one image, so
+  // per-frame cost tracks the tiles *in flight* (a few hundred at any
+  // moment) rather than the whole grid. Sprites are sorted by delay and all
+  // share one duration, so they land in array order and a single moving
+  // index separates "landed" from "flying".
+  const settled = document.createElement('canvas');
+  settled.width = w;
+  settled.height = h;
+  const sctx = settled.getContext('2d')!;
+  sctx.imageSmoothingEnabled = false;
+  let landed = 0;
+
   function paint(elapsed: number) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = BACKDROP;
     ctx.fillRect(0, 0, w, h);
     if (elapsed < flight) drawGuides();
 
-    // Pass 1: the tiles themselves, transformed by their own progress.
-    for (const s of sprites) {
+    while (landed < sprites.length && elapsed - sprites[landed].delay >= duration) {
+      const s = sprites[landed++];
+      const bmp = bitmaps.get(s.tile);
+      if (bmp) sctx.drawImage(bmp, s.fx, s.fy, tileSize, tileSize);
+    }
+    ctx.drawImage(settled, 0, 0);
+    let started = landed;
+    while (started < sprites.length && sprites[started].delay < elapsed) started++;
+
+    // Pass 1: tiles in flight, transformed by their own progress.
+    for (let i = landed; i < started; i++) {
+      const s = sprites[i];
       const bmp = bitmaps.get(s.tile);
       if (!bmp) continue;
       const p = Math.min(1, Math.max(0, (elapsed - s.delay) / duration));
@@ -176,13 +223,6 @@ export function animate(
       const e = easeOutCubic(p);
       const x = s.sx + (s.fx - s.sx) * e;
       const y = s.sy + (s.fy - s.sy) * e;
-
-      if (p >= 1) {
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.globalAlpha = 1;
-        ctx.drawImage(bmp, s.fx, s.fy, tileSize, tileSize);
-        continue;
-      }
 
       // In flight: overshoot the scale slightly and unwind the spin, both
       // driven off the same eased parameter so they land together.
@@ -203,7 +243,8 @@ export function animate(
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalCompositeOperation = 'lighter';
     ctx.fillStyle = BRAND.cyan;
-    for (const s of sprites) {
+    for (let i = landed; i < started; i++) {
+      const s = sprites[i];
       const p = Math.min(1, Math.max(0, (elapsed - s.delay) / duration));
       if (p <= 0 || p >= 1) continue;
       const e = easeOutCubic(p);
@@ -214,6 +255,8 @@ export function animate(
     }
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1;
+
+    if (elapsed >= flight - 0.15 && elapsed < flight + REVEAL) drawReveal(elapsed - (flight - 0.15));
 
     if (watermark) drawWatermark(ctx, w, h);
     onProgress?.(Math.min(1, elapsed / Math.max(0.001, flight)));

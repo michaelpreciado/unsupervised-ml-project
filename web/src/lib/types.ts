@@ -25,6 +25,18 @@ export interface PipelineParams {
   compare: boolean;
 }
 
+/** Coarse stage names the worker reports while it works. */
+export type Stage = 'features' | 'kmeans' | 'matching' | 'brute' | 'projection';
+
+export interface ProgressMessage {
+  kind: 'progress';
+  id: number;
+  stage: Stage;
+  /** 0..1 across the whole run, monotone. */
+  fraction: number;
+  label: string;
+}
+
 /** The feature space, flattened to two principal components so it can be
  * drawn. Tiles, centroids and the target's cells all share one basis. */
 export interface Scatter {
@@ -36,8 +48,19 @@ export interface Scatter {
   cells: Float32Array;
   /** Every `cellStride`-th cell made it into `cells`. */
   cellStride: number;
+  /** Lloyd iterations of the winning fit, centroids projected into the same
+   * basis — what the convergence replay animates. */
+  frames: ScatterFrame[];
   /** Variance share of each axis, so the plot can state its own fidelity. */
   explained: [number, number];
+}
+
+export interface ScatterFrame {
+  /** k * 2 projected centroid coordinates. */
+  centroids: Float32Array;
+  /** Cluster per library tile at this iteration. */
+  labels: Uint8Array;
+  inertia: number;
 }
 
 export interface PipelineStats {
